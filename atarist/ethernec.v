@@ -152,6 +152,68 @@ always @(posedge clk) begin
 	end
 end
 
+// ------- NetUSBee: 93C46 eeprom mac-read stub -------
+reg [7:0]  ee_cr;
+reg [3:0]  ee_bit_cnt;
+reg [15:0] ee_shift_reg;
+reg        ee_sclk_D;
+
+// page 3 write selector
+wire ee_reg_write = ne_write_en && (ps == 2'd3) && (addr == 5'h01);
+
+wire ee_sclk_posedge =  ee_cr[2] && !ee_sclk_D;
+wire ee_sclk_negedge = !ee_cr[2] &&  ee_sclk_D;
+
+always @(posedge clk) begin
+	if(reset) ee_sclk_D <= 1'b0;
+	else      ee_sclk_D <= ee_cr[2];
+end
+
+always @(posedge clk) begin
+	if(reset) begin
+		ee_cr        <= 8'h00;
+		ee_bit_cnt   <= 4'd0;
+		ee_shift_reg <= 16'h0000;
+	end else begin
+
+		if(ee_reg_write) begin
+			ee_cr <= din;
+		end
+
+		if(ee_reg_write ? !din[3] : !ee_cr[3]) begin
+			ee_bit_cnt   <= 4'd0;
+			ee_shift_reg <= 16'h0000;
+		end else begin
+
+			if(ee_sclk_posedge) begin
+				if(ee_bit_cnt < 4'd15)
+					ee_bit_cnt <= ee_bit_cnt + 4'd1;
+
+				if(ee_bit_cnt < 4'd10) begin
+					ee_shift_reg <= {ee_shift_reg[14:0], ee_cr[1]};
+				end
+			end
+
+			if(ee_sclk_negedge) begin
+				if(ee_bit_cnt == 4'd10) begin
+					case (ee_shift_reg[2:0])
+						3'b010:  ee_shift_reg <= {mac[1], mac[0]};
+						3'b011:  ee_shift_reg <= {mac[3], mac[2]};
+						3'b100:  ee_shift_reg <= {mac[5], mac[4]};
+						default: ee_shift_reg <= 16'h0000;
+					endcase
+				end
+
+				if(ee_bit_cnt > 4'd10) begin
+					ee_shift_reg <= {ee_shift_reg[14:0], 1'b0};
+				end
+			end
+		end
+	end
+end
+
+wire ee_do = (ee_bit_cnt < 4'd10) ? 1'b0 : ee_shift_reg[15];
+
 // cpu register read
 always @(*) begin
 	dout = 8'd0;
@@ -163,17 +225,25 @@ always @(*) begin
 		if(ps == 2'd0) begin
 			if(addr == 5'h04) dout = 8'h23;   // tsr: tx ok
 			if(addr == 5'h07) dout = isr;
+			// ident of NetUSBee v.1.1
+			if(addr == 5'h0a) dout = 8'h50;
+			if(addr == 5'h0b) dout = 8'h70;
 		end
-		
+
 		// register page 1
 		if(ps == 2'd1) begin
 			if(addr == 5'h07) dout = curr;
 		end
 
-		// read dma register $10 - $17
-		if(addr[4:3] == 2'b10)
-			dout = rx_buffer[rx_r_cnt];
+		// register page 3
+		if(ps == 2'd3) begin
+			if(addr == 5'h01) dout = {ee_cr[7:1], ee_do}; // eecr
+			if(addr == 5'h03) dout = 8'h80; // config0: 8-bit bus mode
+		end
 
+		// read dma register $10 - $17
+		if((addr[4:3] == 2'b10) && (ps != 2'd3))
+			dout = rx_buffer[rx_r_cnt];
 	end
 end
 
