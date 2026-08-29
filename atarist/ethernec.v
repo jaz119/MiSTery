@@ -56,7 +56,7 @@ localparam STATUS_TX_DONE    = 8'h12;
 
 reg [7:0] statusCode;
 
-wire tx_ready = ({ (rsar[15:8] - tpsr), rsar[7:0] } == tbcr[10:0]);
+wire tx_ready = (statusCode == STATUS_TX_PENDING) && (rbcr == 0);
 assign status = { statusCode, 5'h00, tx_ready, isr[1:0], tbcr };
 
 localparam RX_W_IDLE   = 2'b00;
@@ -106,10 +106,10 @@ wire rst_port = (addr[4:3] == 2'b11); // reset ports ($18-$1F)
 localparam BUF_SIZE = 2048;           // to logic simplify
 
 reg [7:0] rx_buffer [BUF_SIZE-1:0];   // 1 ethernet frame + 4 bytes header
-reg [10:0] rx_w_cnt = 11'd0;          // receive buffer byte counter
+reg [10:0] rx_w_cnt = 0;              // receive buffer byte counter
 
 reg [7:0] tx_buffer [BUF_SIZE-1:0];   // 1 ethernet frame
-reg [10:0] tx_r_cnt = 11'd0;          // transmit buffer byte counter
+reg [10:0] tx_r_cnt = 0;              // transmit buffer byte counter
 
 // ------------- io controller read access to tx buffer ------------
 always @(posedge clk) begin
@@ -118,7 +118,7 @@ always @(posedge clk) begin
 	if (tx_done)
 		tx_r_cnt <= 0;
 	else if (tx_strobe_r2 & ~tx_strobe_r3)
-		tx_r_cnt <= tx_r_cnt + 1'd1;
+		tx_r_cnt <= tx_r_cnt + 1;
 end
 
 reg tx_begin_r, tx_begin_r2, tx_begin_r3;
@@ -201,7 +201,7 @@ always @(posedge clk) begin
 					endcase
 				end
 
-				if(ee_bit_cnt > 4'd10) begin
+				if(ee_bit_cnt > 10) begin
 					ee_shift_reg <= { ee_shift_reg[14:0], 1'b0 };
 				end
 			end
@@ -213,7 +213,7 @@ wire ee_do = (ee_bit_cnt >= 10) ? ee_shift_reg[15] : 1'b0;
 
 // cpu register read
 always @(*) begin
-	dout = 8'd0;
+	dout = 0;
 	if(ne_read) begin            // $faxxxx
 		// cr, dma and reset are always available
 		if(addr == 5'h00)   dout = cr;
@@ -230,14 +230,14 @@ always @(*) begin
 		end
 
 		// register page 1
-		if(ps == 2'd1) begin
+		if(ps == 1) begin
 			if((addr >= 5'h01) && (addr <= 5'h06))
 				dout = mac[addr - 5'h01];
 			if(addr == 5'h07) dout = curr;
 		end
 
 		// register page 3
-		if(ps == 2'd3) begin
+		if(ps == 3) begin
 			if(addr == 5'h01) dout = { ee_cr[7:1], ee_do };
 			if(addr == 5'h03) dout = 8'h18; // config0: rtl8019as, PnP
 			if(addr == 5'h05) dout = 8'h40; // config2: 10Base-T active
@@ -278,6 +278,10 @@ wire rx_write_en = (rx_strobe || int_strobe_en) && !int_begin;
 wire rx_write_begin = (!rx_begin_d & rx_begin) || int_begin;
 
 reg rx_lastByte;
+
+// the ne2000 page size is 256 bytes. thus the page counters are increased
+// every 256 bytes when a data transfer is in progress. First page is used when
+// the first byte is written to 0x0004
 wire [10:0] rx_start = { curr[2:0], 8'h00 };
 
 // state/counter handling on one edge
@@ -298,8 +302,8 @@ end
 
 reg [15:0] rx_len;  // number of bytes received from io controller
 
-wire [7:0] next_page_inc = curr + 1;
-wire [7:0] next = (next_page_inc >= pstop) ? pstart : next_page_inc;
+wire [7:0] next_page = curr + 1;
+wire [7:0] next = (next_page >= pstop) ? pstart : next_page;
 
 wire [7:0] header_byte =
 	(rx_w_cnt[1:0] == 0) ? 1 :
@@ -444,15 +448,7 @@ always @(posedge clk) begin
 			if(din[2]) begin
 				// tx buffer is now full and its contents need to be sent to
 				// the io controller which in turn forwards it to its own nic
-
-				// number of bytes to be transmitted is in tbcr, tx_w_cnt should
-				// contain the same value since this is the number of write
-				// cycles performed on the tx buffer
 				statusCode <= STATUS_TX_PENDING;
-				
-				// once the io controller has sent the packet bit 2 in the isr
-				// is being set. This will cause the ne2000 driver on atari side
-				// to start filling the tx buffer again
 			end
 		end
 			
