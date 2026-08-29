@@ -162,37 +162,37 @@ wire ee_sclk_posedge =  ee_cr[2] && !ee_sclk_D;
 wire ee_sclk_negedge = !ee_cr[2] &&  ee_sclk_D;
 
 always @(posedge clk) begin
-	if(reset) ee_sclk_D <= 1'b0;
-	else      ee_sclk_D <= ee_cr[2];
+	if (reset) ee_sclk_D <= 1'b0;
+	else       ee_sclk_D <= ee_cr[2];
 end
 
 always @(posedge clk) begin
-	if(reset) begin
+	if (reset) begin
 		ee_cr        <= 0;
 		ee_bit_cnt   <= 0;
 		ee_shift_reg <= 0;
 	end else begin
 
-		if(ee_reg_write) begin
+		if (ee_reg_write) begin
 			ee_cr <= din;
 		end
 
-		if(ee_reg_write ? !din[3] : !ee_cr[3]) begin
+		if (ee_reg_write ? !din[3] : !ee_cr[3]) begin
 			ee_bit_cnt   <= 0;
 			ee_shift_reg <= 0;
 		end else begin
 
-			if(ee_sclk_posedge) begin
-				if(ee_bit_cnt < 15)
+			if (ee_sclk_posedge) begin
+				if (ee_bit_cnt < 15)
 					ee_bit_cnt <= ee_bit_cnt + 1;
 
-				if(ee_bit_cnt < 10) begin
+				if (ee_bit_cnt < 10) begin
 					ee_shift_reg <= { ee_shift_reg[14:0], ee_cr[1] };
 				end
 			end
 
-			if(ee_sclk_negedge) begin
-				if(ee_bit_cnt == 10) begin
+			if (ee_sclk_negedge) begin
+				if (ee_bit_cnt == 10) begin
 					case (ee_shift_reg[2:0])
 						3'b010:  ee_shift_reg <= { mac[1], mac[0] };
 						3'b011:  ee_shift_reg <= { mac[3], mac[2] };
@@ -201,7 +201,7 @@ always @(posedge clk) begin
 					endcase
 				end
 
-				if(ee_bit_cnt > 10) begin
+				if (ee_bit_cnt > 10) begin
 					ee_shift_reg <= { ee_shift_reg[14:0], 1'b0 };
 				end
 			end
@@ -227,6 +227,8 @@ always @(*) begin
 			if(addr == 5'h09) dout = rsar[15:8];
 			if(addr == 5'h0a) dout = rbcr[7:0];
 			if(addr == 5'h0b) dout = rbcr[15:8];
+			if(addr == 5'h0c) dout = 8'h01; // rsr: rx ok
+			if(addr == 5'h0e) dout = 8'h48; // dcfg: 8-bit, fifo=4
 		end
 
 		// register page 1
@@ -277,7 +279,7 @@ wire int_begin = (reset & !resetD) || header_begin;
 wire rx_write_en = (rx_strobe || int_strobe_en) && !int_begin;
 wire rx_write_begin = (!rx_begin_d & rx_begin) || int_begin;
 
-reg rx_lastByte;
+reg rx_last_byte;
 
 // the ne2000 page size is 256 bytes. thus the page counters are increased
 // every 256 bytes when a data transfer is in progress. First page is used when
@@ -300,7 +302,7 @@ always @(posedge clk) begin
 	end
 end
 
-reg [15:0] rx_len;  // number of bytes received from io controller
+reg [10:0] rx_len; // number of bytes received from io controller
 
 wire [7:0] next_page = curr + 1;
 wire [7:0] next = (next_page >= pstop) ? pstart : next_page;
@@ -309,14 +311,14 @@ wire [7:0] header_byte =
 	(rx_w_cnt[1:0] == 0) ? 1 :
 	(rx_w_cnt[1:0] == 1) ? next :
 	(rx_w_cnt[1:0] == 2) ? rx_len[7:0] :
-	(rx_w_cnt[1:0] == 3) ? rx_len[15:8] :
+	(rx_w_cnt[1:0] == 3) ? { 5'b00000, rx_len[10:8] } :
 	8'h55;
 
 always @(posedge clk) begin
-	rx_lastByte <= 1'b0;
+	rx_last_byte <= 1'b0;
 
 	if((rx_w_state == RX_W_HEADER) && (rx_w_cnt[7:0] == 4))
-		rx_lastByte <= !rx_write_begin;
+		rx_last_byte <= !rx_write_begin;
 end
 
 // data transfer on other edge
@@ -334,20 +336,21 @@ end
 // does happen after the read cycle has finished
 reg rx_inc;
 reg tx_inc;
+reg header_begin;
 
 // generate flag indicating that a header transfer is about to begin
-reg header_begin;
 always @(posedge clk) begin
 	header_begin <= 1'b0;
 
-	if(rx_begin_d & !rx_begin)
+	if (rx_begin_d & !rx_begin)
 		header_begin <= 1'b1;
 end
 
 // write counter - header size (4) = number of bytes written
-always @(posedge clk)
+always @(posedge clk) begin
 	if (rx_begin_d & !rx_begin)
 		rx_len <= rx_w_cnt - (rx_start + 4);
+end
 
 // cpu write via read
 always @(posedge clk) begin
@@ -357,32 +360,48 @@ always @(posedge clk) begin
 		bnry <= pstart;
 		curr <= pstart;
 		isr  <= 8'h80; // RST
+		rcr  <= 8'h00;
+		tcr  <= 8'h00;
+		imr  <= 8'h00;
+		cr   <= 8'h21;
 		rsar <= 0;
 		// ident of netusbee 1.1
 		rbcr[7:0]  <= 8'h50;
 		rbcr[15:8] <= 8'h70;
+		// internals
+		rx_w_state <= RX_W_IDLE;
+		statusCode <= STATUS_IDLE;
+		rx_inc     <= 1'b0;
+		tx_inc     <= 1'b0;
+	end else begin
+
+		if(ne_write_en && (ps == 0) && (addr == 7)) begin
+			isr <= isr & (~din); // writing 1 clears bit
+		end
 	end
 
 	// last byte ends a mac or header transfer and causes the
 	// receiver state machine to return to the idle state
-	if(rx_lastByte) begin
+	if(rx_last_byte) begin
 		rx_w_state <= RX_W_IDLE;
 
 		// trigger rx interrupt (PRX) at end of transfer
 		if(rx_w_state == RX_W_HEADER) begin
-			isr[0] <= 1'b1; // PRX
+			isr <= isr | 8'h01; // PRX
 			curr <= next;
 		end
 	end
 
 	// The rising edge of rx_begin indicates the start of a data transfer
-	if(!rx_begin_d && rx_begin)
+	if(!rx_begin_d && rx_begin) begin
 		rx_w_state <= RX_W_DATA;
+	end
 
 	// The falling edge of rx_begin marks the end of a data transfer.
 	// So we start setting up the pkt header after the end of the transfer
-	if(rx_begin_d && !rx_begin) 
+	if(rx_begin_d && !rx_begin) begin
 		rx_w_state <= RX_W_HEADER;
+	end
 
 	rx_inc <= 1'b0;
 	tx_inc <= 1'b0;
@@ -400,13 +419,13 @@ always @(posedge clk) begin
 	// signal end of transmission if tx buffer has been read by
 	// io controller
 	if(tx_done) begin
-		isr[1] <= 1'b1;  // PTX
+		isr <= isr | 8'h02; // PTX
 		statusCode <= STATUS_TX_DONE;
-		cr[2]  <= 1'b0;
+		cr[2] <= 1'b0;
 	end
 
-	if ((ne_read_en || ne_write_en) && dma_port && (rbcr == 1)) begin
-		isr[6] <= 1'b1; // RDC
+	if((ne_read_en || ne_write_en) && dma_port && (rbcr == 1)) begin
+		isr <= isr | 8'h40; // RDC
 	end
 
 	// if cpu reads have internal side effects then ths is handled
@@ -440,7 +459,7 @@ always @(posedge clk) begin
 
 			// check for dma is stopped (Remote DMA Abort)
 			if(dma_cmd == 4) begin
-				isr[6] <= 1'b1; // RDC
+				isr <= isr | 8'h40; // RDC
 				rbcr <= 0;
 			end
 
@@ -461,13 +480,6 @@ always @(posedge clk) begin
 				5'h04: tpsr <= din;
 				5'h05: tbcr[7:0] <= din;
 				5'h06: tbcr[15:8] <= din;
-				5'h07: begin
-					// writing 1 clears bit
-					if (din[0]) isr[0] <= 1'b0;
-					if (din[1]) isr[1] <= 1'b0;
-					if (din[6]) isr[6] <= 1'b0;
-					if (din[7]) isr[7] <= 1'b0;
-				end
 				5'h08: rsar[7:0] <= din;
 				5'h09: rsar[15:8] <= din;
 				5'h0a: rbcr[7:0] <= din;
@@ -486,9 +498,7 @@ always @(posedge clk) begin
 
 		// write to dma register $10-$17
 		if(dma_port) begin
-			// store byte in buffer
 			tx_buffer[{ rsar[10:8], rsar[7:0] }] <= din;
-			// increase byte counter
 			tx_inc <= 1'b1;
 		end
 		
