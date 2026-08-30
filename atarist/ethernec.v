@@ -56,7 +56,9 @@ localparam STATUS_TX_DONE    = 8'h12;
 
 reg [7:0] statusCode;
 
+wire rx_busy  = (curr != bnry);
 wire tx_ready = (statusCode == STATUS_TX_PENDING) && (rbcr == 0);
+
 assign status = { statusCode, 5'h00, tx_ready, isr[1:0], tbcr };
 
 localparam RX_W_IDLE   = 2'b00;
@@ -80,16 +82,16 @@ end
 wire ne_read_en = ~ne_read & ne_readD;
 wire ne_write_en = ~ne_write & ne_writeD;
 
-// ---------- ne2000 internal registers -------------
 reg reset = 0;
-reg [7:0]  cr;             // ne command register
-reg [7:0]  isr;            // ne interrupt service register
+
+// ---------- ne2000 internal registers -------------
+reg [7:0]  cr;             // command register
+reg [7:0]  isr;            // interrupt service register
 reg [7:0]  imr;            // interrupt mask register
 reg [7:0]  curr;           // current page register
 reg [7:0]  bnry;           // boundary page
 reg [7:0]  rcr;            // receiver control register
 reg [7:0]  tcr;            // transmitter control register
-reg [7:0]  tpsr;
 reg [7:0]  pstart;         // rx buffer ring start page
 reg [7:0]  pstop;          // rx buffer ring stop page
 reg [15:0] rbcr;           // receiver byte count register
@@ -212,51 +214,52 @@ end
 wire ee_do = (ee_bit_cnt >= 10) ? ee_shift_reg[15] : 1'b0;
 
 // cpu register read
-always @(*) begin
-	dout = 0;
+always @(posedge clk) begin
 	if(ne_read) begin            // $faxxxx
 		// cr, dma and reset are always available
-		if(addr == 5'h00)   dout = cr;
+		if(addr == 5'h00)   dout <= cr;
 
 		// register page 0
 		if(ps == 0) begin
-			if(addr == 5'h03) dout = bnry;
-			if(addr == 5'h04) dout = 8'h23; // tsr: tx ok
-			if(addr == 5'h07) dout = isr;
-			if(addr == 5'h08) dout = rsar[7:0];
-			if(addr == 5'h09) dout = rsar[15:8];
-			if(addr == 5'h0a) dout = rbcr[7:0];
-			if(addr == 5'h0b) dout = rbcr[15:8];
-			if(addr == 5'h0c) dout = 8'h01; // rsr: rx ok
-			if(addr == 5'h0e) dout = 8'h48; // dcfg: 8-bit, fifo=4
+			if(addr == 5'h03) dout <= bnry;
+			if(addr == 5'h04) dout <= 8'h23; // tsr: tx ok
+			if(addr == 5'h07) dout <= isr;
+			if(addr == 5'h08) dout <= rsar[7:0];
+			if(addr == 5'h09) dout <= rsar[15:8];
+			if(addr == 5'h0a) dout <= rbcr[7:0];
+			if(addr == 5'h0b) dout <= rbcr[15:8];
+			if(addr == 5'h0c) dout <= 8'h01; // rsr: rx ok
+			if(addr == 5'h0e) dout <= 8'h48; // dcfg: 8-bit, fifo=4
 		end
 
 		// register page 1
 		if(ps == 1) begin
 			if((addr >= 5'h01) && (addr <= 5'h06))
-				dout = mac[addr - 5'h01];
-			if(addr == 5'h07) dout = curr;
+				dout <= mac[addr - 5'h01];
+			if(addr == 5'h07) dout <= curr;
 		end
 
 		// register page 3
 		if(ps == 3) begin
-			if(addr == 5'h01) dout = { ee_cr[7:1], ee_do };
-			if(addr == 5'h03) dout = 8'h18; // config0: rtl8019as, PnP
-			if(addr == 5'h05) dout = 8'h40; // config2: 10Base-T active
-			if(addr == 5'h06) dout = 8'h40; // config3: full duplex
+			if(addr == 5'h01) dout <= { ee_cr[7:1], ee_do };
+			if(addr == 5'h03) dout <= 8'h18; // config0: rtl8019as, PnP
+			if(addr == 5'h05) dout <= 8'h40; // config2: 10Base-T active
+			if(addr == 5'h06) dout <= 8'h40; // config3: full duplex
 		end
 
 		// read dma register $10 - $17
 		if(dma_port && (ps != 3)) begin
 			if(rsar[15:8] == 0) begin
 				if(rsar[2:0] < 6)
-					dout = mac[rsar[2:0]];
+					dout <= mac[rsar[2:0]];
 				else
-					dout = 0;
+					dout <= 0;
 			end else begin
-				dout = rx_buffer[{ rsar[10:8], rsar[7:0] }];
+				dout <= rx_buffer[{ rsar[10:8], rsar[7:0] }];
 			end
 		end
+	end else begin
+		dout <= 0;
 	end
 end
 
@@ -282,25 +285,8 @@ wire rx_write_begin = (!rx_begin_d & rx_begin) || int_begin;
 reg rx_last_byte;
 
 // the ne2000 page size is 256 bytes. thus the page counters are increased
-// every 256 bytes when a data transfer is in progress. First page is used when
-// the first byte is written to 0x0004
+// every 256 bytes when a data transfer is in progress.
 wire [10:0] rx_start = { curr[2:0], 8'h00 };
-
-// state/counter handling on one edge
-always @(posedge clk) begin
-	if(rx_write_begin) begin
-		if(header_begin) begin
-			rx_w_cnt <= rx_start;
-		end else begin
-			// payload starts at byte 4 (after ne2000 header)
-			rx_w_cnt <= rx_start + 4;
-		end
-	end else if(rx_write_en) begin
-		if(rx_w_state != RX_W_IDLE) begin
-			rx_w_cnt <= rx_w_cnt + 1;
-		end 
-	end
-end
 
 reg [10:0] rx_len; // number of bytes received from io controller
 
@@ -318,7 +304,7 @@ always @(posedge clk) begin
 	rx_last_byte <= 1'b0;
 
 	if((rx_w_state == RX_W_HEADER) && (rx_w_cnt[7:0] == 4))
-		rx_last_byte <= !rx_write_begin;
+		rx_last_byte <= !int_begin;
 end
 
 // data transfer on other edge
@@ -329,6 +315,18 @@ always @(posedge clk) begin
 			RX_W_HEADER: rx_buffer[rx_w_cnt] <= header_byte;
 			default: ;
 		endcase
+	end
+
+	if (rx_write_begin) begin
+		if (header_begin) begin
+			rx_w_cnt <= rx_start;
+		end else begin
+			rx_w_cnt <= rx_start + 4;
+		end
+	end else if(rx_write_en) begin
+		if (rx_w_state != RX_W_IDLE) begin
+			rx_w_cnt <= rx_w_cnt + 1;
+		end 
 	end
 end
 
@@ -354,9 +352,8 @@ end
 
 // cpu write via read
 always @(posedge clk) begin
-
 	// reset state
-	if(reset & !resetD) begin
+	if (reset & !resetD) begin
 		bnry <= pstart;
 		curr <= pstart;
 		isr  <= 8'h80; // RST
@@ -375,136 +372,135 @@ always @(posedge clk) begin
 		tx_inc     <= 1'b0;
 	end else begin
 
-		if(ne_write_en && (ps == 0) && (addr == 7)) begin
+		if (ne_write_en && (ps == 0) && (addr == 7)) begin
 			isr <= isr & (~din); // writing 1 clears bit
 		end
-	end
 
-	// last byte ends a mac or header transfer and causes the
-	// receiver state machine to return to the idle state
-	if(rx_last_byte) begin
-		rx_w_state <= RX_W_IDLE;
-
-		// trigger rx interrupt (PRX) at end of transfer
-		if(rx_w_state == RX_W_HEADER) begin
-			isr <= isr | 8'h01; // PRX
-			curr <= next;
-		end
-	end
-
-	// The rising edge of rx_begin indicates the start of a data transfer
-	if(!rx_begin_d && rx_begin) begin
-		rx_w_state <= RX_W_DATA;
-	end
-
-	// The falling edge of rx_begin marks the end of a data transfer.
-	// So we start setting up the pkt header after the end of the transfer
-	if(rx_begin_d && !rx_begin) begin
-		rx_w_state <= RX_W_HEADER;
-	end
-
-	rx_inc <= 1'b0;
-	tx_inc <= 1'b0;
-
-	if(rx_inc || tx_inc) begin
-		if((rsar + 1) == { pstop, 8'h00 })
-			rsar <= { pstart, 8'h00 };
-		else
-			rsar <= rsar + 1;
-
-		if(rbcr != 0)
-			rbcr <= rbcr - 1;
-	end
-
-	// signal end of transmission if tx buffer has been read by
-	// io controller
-	if(tx_done) begin
-		isr <= isr | 8'h02; // PTX
-		statusCode <= STATUS_TX_DONE;
-		cr[2] <= 1'b0;
-	end
-
-	if((ne_read_en || ne_write_en) && dma_port && (rbcr == 1)) begin
-		isr <= isr | 8'h40; // RDC
-	end
-
-	// if cpu reads have internal side effects then ths is handled
-	// here (and not in the "register read" block above)
-	if(ne_read_en) begin
-		// register page 0
-		if(ps == 0) begin
-		end
-		
-		// register page 1
-		if(ps == 1) begin
-		end
-
-		// read dma register $10-$17
-		if(dma_port)
-			rx_inc <= 1'b1;
-		
-		// read reset register $18-$1f
-		if(rst_port) begin
-			reset <= 1'b1;      // read to reset register sets reset
-			statusCode <= STATUS_IDLE;
+		// last byte ends a mac or header transfer and causes the
+		// receiver state machine to return to the idle state
+		if (rx_last_byte) begin
 			rx_w_state <= RX_W_IDLE;
-		end
-	end
 
-	if(ne_write_en) begin
-		if(addr == 0) begin
-			cr <= din;
-			
-			// writing the command register may actually start things ...
-
-			// check for dma is stopped (Remote DMA Abort)
-			if(dma_cmd == 4) begin
-				isr <= isr | 8'h40; // RDC
-				rbcr <= 0;
-			end
-
-			// check if TX bit was set
-			if(din[2]) begin
-				// tx buffer is now full and its contents need to be sent to
-				// the io controller which in turn forwards it to its own nic
-				statusCode <= STATUS_TX_PENDING;
+			// trigger rx interrupt (PRX) at end of transfer
+			if (rx_w_state == RX_W_HEADER) begin
+				isr <= isr | 8'h01; // PRX
+				curr <= next;
 			end
 		end
-			
-		// register page 0
-		if(ps == 0) begin
-			case (addr)
-				5'h01: pstart <= din;
-				5'h02: pstop <= din;
-				5'h03: bnry <= din;
-				5'h04: tpsr <= din;
-				5'h05: tbcr[7:0] <= din;
-				5'h06: tbcr[15:8] <= din;
-				5'h08: rsar[7:0] <= din;
-				5'h09: rsar[15:8] <= din;
-				5'h0a: rbcr[7:0] <= din;
-				5'h0b: rbcr[15:8] <= din;
-				5'h0c: rcr <= din;
-				5'h0d: tcr <= din;
-				5'h0f: imr <= din;
-				default: ;
-			endcase
-		end
-		
-		// register page 1
-		if(ps == 1) begin
-			if(addr == 7) curr <= din;
+
+		// The rising edge of rx_begin indicates the start of a data transfer
+		if (!rx_begin_d && rx_begin) begin
+			rx_w_state <= RX_W_DATA;
 		end
 
-		// write to dma register $10-$17
-		if(dma_port) begin
-			tx_buffer[{ rsar[10:8], rsar[7:0] }] <= din;
-			tx_inc <= 1'b1;
+		// The falling edge of rx_begin marks the end of a data transfer.
+		// So we start setting up the pkt header after the end of the transfer
+		if (rx_begin_d && !rx_begin) begin
+			rx_w_state <= RX_W_HEADER;
 		end
-		
-		// reset register $18-$1f
-		if(rst_port)
-			reset <= 0; // write to reset register clears reset
+
+		rx_inc <= 1'b0;
+		tx_inc <= 1'b0;
+
+		if (rx_inc || tx_inc) begin
+			if ((rsar + 1) == { pstop, 8'h00 })
+				rsar <= { pstart, 8'h00 };
+			else
+				rsar <= rsar + 1;
+
+			if (rbcr != 0)
+				rbcr <= rbcr - 1;
+		end
+
+		// signal end of transmission if tx buffer has been read by
+		// io controller
+		if (tx_done) begin
+			isr <= isr | 8'h02; // PTX
+			statusCode <= STATUS_TX_DONE;
+			cr[2] <= 1'b0;
+		end
+
+		if ((ne_read_en || ne_write_en) && dma_port && (rbcr == 1)) begin
+			isr <= isr | 8'h40; // RDC
+		end
+
+		// if cpu reads have internal side effects then ths is handled
+		// here (and not in the "register read" block above)
+		if (ne_read_en) begin
+			// register page 0
+			if (ps == 0) begin
+			end
+
+			// register page 1
+			if (ps == 1) begin
+			end
+
+			// read dma register $10-$17
+			if (dma_port)
+				rx_inc <= 1'b1;
+
+			// read reset register $18-$1f
+			if (rst_port) begin
+				reset <= 1'b1;      // read to reset register sets reset
+				statusCode <= STATUS_IDLE;
+				rx_w_state <= RX_W_IDLE;
+			end
+		end
+
+		if(ne_write_en) begin
+			if(addr == 0) begin
+				cr <= din;
+
+				// writing the command register may actually start things ...
+
+				// check for dma is stopped (Remote DMA Abort)
+				if (dma_cmd == 4) begin
+					isr <= isr | 8'h40; // RDC
+					rbcr <= 0;
+				end
+
+				// check if TX bit was set
+				if (din[2]) begin
+					// tx buffer is now full and its contents need to be sent to
+					// the io controller which in turn forwards it to its own nic
+					statusCode <= STATUS_TX_PENDING;
+				end
+			end
+
+			// register page 0
+			if (ps == 0) begin
+				case (addr)
+					5'h01: pstart <= din;
+					5'h02: pstop <= din;
+					5'h03: bnry <= din;
+					5'h05: tbcr[7:0] <= din;
+					5'h06: tbcr[15:8] <= din;
+					5'h08: rsar[7:0] <= din;
+					5'h09: rsar[15:8] <= din;
+					5'h0a: rbcr[7:0] <= din;
+					5'h0b: rbcr[15:8] <= din;
+					5'h0c: rcr <= din;
+					5'h0d: tcr <= din;
+					5'h0f: imr <= din;
+					default: ;
+				endcase
+			end
+
+			// register page 1
+			if (ps == 1) begin
+				if (addr == 7) curr <= din;
+			end
+
+			// write to dma register $10-$17
+			if (dma_port) begin
+				tx_buffer[{ rsar[10:8], rsar[7:0] }] <= din;
+				tx_inc <= 1'b1;
+			end
+
+			// reset register $18-$1f
+			if (rst_port)
+				reset <= 0; // write to reset register clears reset
+		end
 	end
 end
 
