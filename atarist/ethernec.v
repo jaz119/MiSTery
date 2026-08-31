@@ -90,8 +90,6 @@ reg [7:0]  isr;            // interrupt service register
 reg [7:0]  imr;            // interrupt mask register
 reg [7:0]  curr;           // current page register
 reg [7:0]  bnry;           // boundary page
-reg [7:0]  rcr;            // receiver control register
-reg [7:0]  tcr;            // transmitter control register
 reg [7:0]  pstart;         // rx buffer ring start page
 reg [7:0]  pstop;          // rx buffer ring stop page
 reg [15:0] rbcr;           // receiver byte count register
@@ -107,11 +105,17 @@ wire rst_port = (addr[4:3] == 2'b11); // reset ports ($18-$1F)
 // ------------- rx/tx buffers ------------
 localparam BUF_SIZE = 2048;           // to logic simplify
 
-reg [7:0] rx_buffer [BUF_SIZE-1:0];   // 1 ethernet frame + 4 bytes header
+(* ramstyle = "no_rw_check, M9K" *) reg [7:0] rx_buffer [BUF_SIZE-1:0]; // 1 ethernet frame + 4 bytes header
 reg [10:0] rx_w_cnt = 0;              // receive buffer byte counter
 
-reg [7:0] tx_buffer [BUF_SIZE-1:0];   // 1 ethernet frame
+(* ramstyle = "no_rw_check, M9K" *) reg [7:0] tx_buffer [BUF_SIZE-1:0]; // 1 ethernet frame
 reg [10:0] tx_r_cnt = 0;              // transmit buffer byte counter
+
+reg [7:0] rx_buf_dout;
+
+always @(posedge clk) begin
+    rx_buf_dout <= rx_buffer[rsar[10:0]];
+end
 
 // ------------- io controller read access to tx buffer ------------
 always @(posedge clk) begin
@@ -146,7 +150,7 @@ always @(posedge clk) begin
 	else if (mac_strobe) begin
 		if (mac_cnt < 6) begin
 			mac[mac_cnt] <= mac_byte;
-			mac_cnt <= mac_cnt + 1;
+			mac_cnt <= mac_cnt + 3'd1;
 		end
 	end
 end
@@ -159,6 +163,7 @@ reg        ee_sclk_D;
 
 // page 3 write selector
 wire ee_reg_write = ne_write_en && (ps == 3) && (addr == 1);
+wire ee_reset     = ee_reg_write ? !din[3] : !ee_cr[3];
 
 wire ee_sclk_posedge =  ee_cr[2] && !ee_sclk_D;
 wire ee_sclk_negedge = !ee_cr[2] &&  ee_sclk_D;
@@ -175,11 +180,10 @@ always @(posedge clk) begin
 		ee_shift_reg <= 0;
 	end else begin
 
-		if (ee_reg_write) begin
+		if (ee_reg_write)
 			ee_cr <= din;
-		end
 
-		if (ee_reg_write ? !din[3] : !ee_cr[3]) begin
+		if (ee_reset) begin
 			ee_bit_cnt   <= 0;
 			ee_shift_reg <= 0;
 		end else begin
@@ -188,9 +192,8 @@ always @(posedge clk) begin
 				if (ee_bit_cnt < 15)
 					ee_bit_cnt <= ee_bit_cnt + 1;
 
-				if (ee_bit_cnt < 10) begin
+				if (ee_bit_cnt < 10)
 					ee_shift_reg <= { ee_shift_reg[14:0], ee_cr[1] };
-				end
 			end
 
 			if (ee_sclk_negedge) begin
@@ -201,9 +204,8 @@ always @(posedge clk) begin
 						3'b100:  ee_shift_reg <= { mac[5], mac[4] };
 						default: ee_shift_reg <= 0;
 					endcase
-				end
 
-				if (ee_bit_cnt > 10) begin
+				end else if (ee_bit_cnt > 10) begin
 					ee_shift_reg <= { ee_shift_reg[14:0], 1'b0 };
 				end
 			end
@@ -255,7 +257,7 @@ always @(posedge clk) begin
 				else
 					dout <= 0;
 			end else begin
-				dout <= rx_buffer[{ rsar[10:8], rsar[7:0] }];
+				dout <= rx_buf_dout;
 			end
 		end
 	end else begin
@@ -311,8 +313,8 @@ end
 always @(posedge clk) begin
 	if (rx_write_en) begin
 		case (rx_w_state)
-			RX_W_DATA:   rx_buffer[rx_w_cnt] <= rx_byte;
-			RX_W_HEADER: rx_buffer[rx_w_cnt] <= header_byte;
+			RX_W_DATA:   rx_buffer[rx_w_cnt[10:0]] <= rx_byte;
+			RX_W_HEADER: rx_buffer[rx_w_cnt[10:0]] <= header_byte;
 			default: ;
 		endcase
 	end
@@ -357,8 +359,6 @@ always @(posedge clk) begin
 		bnry <= pstart;
 		curr <= pstart;
 		isr  <= 8'h80; // RST
-		rcr  <= 8'h00;
-		tcr  <= 8'h00;
 		imr  <= 8'h00;
 		cr   <= 8'h21;
 		rsar <= 0;
@@ -479,8 +479,6 @@ always @(posedge clk) begin
 					5'h09: rsar[15:8] <= din;
 					5'h0a: rbcr[7:0] <= din;
 					5'h0b: rbcr[15:8] <= din;
-					5'h0c: rcr <= din;
-					5'h0d: tcr <= din;
 					5'h0f: imr <= din;
 					default: ;
 				endcase
@@ -493,13 +491,13 @@ always @(posedge clk) begin
 
 			// write to dma register $10-$17
 			if (dma_port) begin
-				tx_buffer[{ rsar[10:8], rsar[7:0] }] <= din;
+				tx_buffer[rsar[10:0]] <= din;
 				tx_inc <= 1'b1;
 			end
 
 			// reset register $18-$1f
 			if (rst_port)
-				reset <= 0; // write to reset register clears reset
+				reset <= 1'b0; // write to reset register clears reset
 		end
 	end
 end
