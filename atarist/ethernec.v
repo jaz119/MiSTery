@@ -56,9 +56,7 @@ localparam STATUS_TX_DONE    = 8'h12;
 
 reg [7:0] statusCode;
 
-wire rx_busy  = (curr != bnry);
 wire tx_ready = (statusCode == STATUS_TX_PENDING) && (rbcr == 0);
-
 assign status = { statusCode, 5'h00, tx_ready, isr[1:0], tbcr };
 
 localparam RX_W_IDLE   = 2'b00;
@@ -82,7 +80,7 @@ end
 wire ne_read_en = ~ne_read & ne_readD;
 wire ne_write_en = ~ne_write & ne_writeD;
 
-reg reset = 0;
+reg reset = 1'b1;
 
 // ---------- ne2000 internal registers -------------
 reg [7:0]  cr;             // command register
@@ -105,10 +103,12 @@ wire rst_port = (addr[4:3] == 2'b11); // reset ports ($18-$1F)
 // ------------- rx/tx buffers ------------
 localparam BUF_SIZE = 2048;           // to logic simplify
 
-(* ramstyle = "no_rw_check, M9K" *) reg [7:0] rx_buffer [BUF_SIZE-1:0]; // 1 ethernet frame + 4 bytes header
+(* ramstyle = "no_rw_check, M9K" *)
+reg [7:0] rx_buffer [BUF_SIZE-1:0];   // 1 ethernet frame + 4 bytes header
 reg [10:0] rx_w_cnt = 0;              // receive buffer byte counter
 
-(* ramstyle = "no_rw_check, M9K" *) reg [7:0] tx_buffer [BUF_SIZE-1:0]; // 1 ethernet frame
+(* ramstyle = "no_rw_check, M9K" *)
+reg [7:0] tx_buffer [BUF_SIZE-1:0];   // 1 ethernet frame
 reg [10:0] tx_r_cnt = 0;              // transmit buffer byte counter
 
 reg [7:0] rx_buf_dout;
@@ -238,7 +238,8 @@ always @(posedge clk) begin
 		if(ps == 1) begin
 			if((addr >= 5'h01) && (addr <= 5'h06))
 				dout <= mac[addr - 5'h01];
-			if(addr == 5'h07) dout <= curr;
+			if(addr == 5'h07)
+				dout <= curr;
 		end
 
 		// register page 3
@@ -291,16 +292,12 @@ reg rx_last_byte;
 wire [10:0] rx_start = { curr[2:0], 8'h00 };
 
 reg [10:0] rx_len; // number of bytes received from io controller
-
-wire [7:0] next_page = curr + 1;
-wire [7:0] next = (next_page >= pstop) ? pstart : next_page;
+reg [7:0] next_page;
 
 wire [7:0] header_byte =
-	(rx_w_cnt[1:0] == 0) ? 1 :
-	(rx_w_cnt[1:0] == 1) ? next :
-	(rx_w_cnt[1:0] == 2) ? rx_len[7:0] :
-	(rx_w_cnt[1:0] == 3) ? { 5'b00000, rx_len[10:8] } :
-	8'h55;
+	(rx_w_cnt[1:0] == 2'b00) ? 8'h01 :
+	(rx_w_cnt[1:0] == 2'b01) ? next_page :
+	(rx_w_cnt[1:0] == 2'b10) ? rx_len[7:0] : { 5'b00000, rx_len[10:8] };
 
 always @(posedge clk) begin
 	rx_last_byte <= 1'b0;
@@ -313,8 +310,8 @@ end
 always @(posedge clk) begin
 	if (rx_write_en) begin
 		case (rx_w_state)
-			RX_W_DATA:   rx_buffer[rx_w_cnt[10:0]] <= rx_byte;
-			RX_W_HEADER: rx_buffer[rx_w_cnt[10:0]] <= header_byte;
+			RX_W_DATA:   rx_buffer[rx_w_cnt] <= rx_byte;
+			RX_W_HEADER: rx_buffer[rx_w_cnt] <= header_byte;
 			default: ;
 		endcase
 	end
@@ -348,8 +345,11 @@ end
 
 // write counter - header size (4) = number of bytes written
 always @(posedge clk) begin
-	if (rx_begin_d & !rx_begin)
-		rx_len <= rx_w_cnt - (rx_start + 4);
+	if (!rx_begin_d && rx_begin) begin
+		rx_len <= 11'd4;
+	end else if (rx_write_en && (rx_w_state == RX_W_DATA)) begin
+		rx_len <= rx_len + 11'd1;
+	end
 end
 
 // cpu write via read
@@ -368,12 +368,19 @@ always @(posedge clk) begin
 		// internals
 		rx_w_state <= RX_W_IDLE;
 		statusCode <= STATUS_IDLE;
+		next_page  <= curr + 8'd1;
 		rx_inc     <= 1'b0;
 		tx_inc     <= 1'b0;
+		reset      <= 1'b0;
 	end else begin
 
 		if (ne_write_en && (ps == 0) && (addr == 7)) begin
 			isr <= isr & (~din); // writing 1 clears bit
+
+			if (din[1]) begin
+				// clear PTX
+				statusCode <= STATUS_IDLE;
+			end
 		end
 
 		// last byte ends a mac or header transfer and causes the
@@ -381,10 +388,14 @@ always @(posedge clk) begin
 		if (rx_last_byte) begin
 			rx_w_state <= RX_W_IDLE;
 
-			// trigger rx interrupt (PRX) at end of transfer
 			if (rx_w_state == RX_W_HEADER) begin
-				isr <= isr | 8'h01; // PRX
-				curr <= next;
+				isr  <= isr | 8'h01; // PRX
+				curr <= next_page;
+
+				if ((next_page + 8'd1) == (pstart + 8'd8) || (next_page + 8'd1) == pstop)
+					next_page <= pstart;
+				else
+					next_page <= next_page + 8'd1;
 			end
 		end
 
@@ -403,13 +414,16 @@ always @(posedge clk) begin
 		tx_inc <= 1'b0;
 
 		if (rx_inc || tx_inc) begin
-			if ((rsar + 1) == { pstop, 8'h00 })
-				rsar <= { pstart, 8'h00 };
-			else
-				rsar <= rsar + 1;
+			rsar <= rsar + 1'b1;
 
-			if (rbcr != 0)
+			if (rbcr != 0) begin
 				rbcr <= rbcr - 1;
+
+				if (rbcr == 1) begin
+					cr[5:3] <= 3'b011; 
+					isr     <= isr | 8'h40; // RDC
+				end
+			end
 		end
 
 		// signal end of transmission if tx buffer has been read by
@@ -418,10 +432,6 @@ always @(posedge clk) begin
 			isr <= isr | 8'h02; // PTX
 			statusCode <= STATUS_TX_DONE;
 			cr[2] <= 1'b0;
-		end
-
-		if ((ne_read_en || ne_write_en) && dma_port && (rbcr == 1)) begin
-			isr <= isr | 8'h40; // RDC
 		end
 
 		// if cpu reads have internal side effects then ths is handled
@@ -486,7 +496,13 @@ always @(posedge clk) begin
 
 			// register page 1
 			if (ps == 1) begin
-				if (addr == 7) curr <= din;
+				if (addr == 7) begin
+					curr <= din;
+					if ((din + 8'd1) == (pstart + 8'd8) || (din + 8'd1) == pstop)
+						next_page <= pstart;
+					else
+						next_page <= din + 8'd1;
+				end
 			end
 
 			// write to dma register $10-$17
@@ -502,6 +518,7 @@ always @(posedge clk) begin
 	end
 end
 
-assign ne_int = (| (isr & imr)) && !reset;
+// INT if not reset, not masked and not stopped
+assign ne_int = (| (isr & imr)) && !reset && !cr[0];
 
 endmodule
