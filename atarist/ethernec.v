@@ -57,7 +57,7 @@ localparam STATUS_TX_DONE    = 8'h12;
 reg [7:0] statusCode;
 
 wire tx_ready = (statusCode == STATUS_TX_PENDING) && (rbcr == 0);
-assign status = { statusCode, 5'h00, tx_ready, isr[1:0], tbcr };
+assign status = { statusCode, 5'h00, tx_ready, isr[1:0], 5'h00, tbcr };
 
 localparam RX_W_IDLE   = 2'b00;
 localparam RX_W_DATA   = 2'b01;
@@ -92,7 +92,7 @@ reg [7:0]  pstart;         // rx buffer ring start page
 reg [7:0]  pstop;          // rx buffer ring stop page
 reg [15:0] rbcr;           // receiver byte count register
 reg [15:0] rsar;           // receiver address register
-reg [15:0] tbcr;           // transmitter byte count register
+reg [10:0] tbcr;           // transmitter byte count register
 
 wire [1:0] ps = cr[7:6];              // register page select
 wire [2:0] dma_cmd = din[5:3];        // remote DMA command
@@ -124,7 +124,7 @@ always @(posedge clk) begin
 	if (tx_done)
 		tx_r_cnt <= 0;
 	else if (tx_strobe_r2 & ~tx_strobe_r3)
-		tx_r_cnt <= tx_r_cnt + 1;
+		tx_r_cnt <= tx_r_cnt + 1'd1;
 end
 
 reg tx_begin_r, tx_begin_r2, tx_begin_r3;
@@ -217,52 +217,71 @@ wire ee_do = (ee_bit_cnt >= 10) ? ee_shift_reg[15] : 1'b0;
 
 // cpu register read
 always @(posedge clk) begin
-	if(ne_read) begin            // $faxxxx
-		// cr, dma and reset are always available
-		if(addr == 5'h00)   dout <= cr;
-
-		// register page 0
-		if(ps == 0) begin
-			if(addr == 5'h03) dout <= bnry;
-			if(addr == 5'h04) dout <= 8'h23; // tsr: tx ok
-			if(addr == 5'h07) dout <= isr;
-			if(addr == 5'h08) dout <= rsar[7:0];
-			if(addr == 5'h09) dout <= rsar[15:8];
-			if(addr == 5'h0a) dout <= rbcr[7:0];
-			if(addr == 5'h0b) dout <= rbcr[15:8];
-			if(addr == 5'h0c) dout <= 8'h01; // rsr: rx ok
-			if(addr == 5'h0e) dout <= 8'h48; // dcfg: 8-bit, fifo=4
-		end
-
-		// register page 1
-		if(ps == 1) begin
-			if((addr >= 5'h01) && (addr <= 5'h06))
-				dout <= mac[addr - 5'h01];
-			if(addr == 5'h07)
-				dout <= curr;
-		end
-
-		// register page 3
-		if(ps == 3) begin
-			if(addr == 5'h01) dout <= { ee_cr[7:1], ee_do };
-			if(addr == 5'h03) dout <= 8'h18; // config0: rtl8019as, PnP
-			if(addr == 5'h05) dout <= 8'h40; // config2: 10Base-T active
-			if(addr == 5'h06) dout <= 8'h40; // config3: full duplex
-		end
-
-		// read dma register $10 - $17
-		if(dma_port && (ps != 3)) begin
-			if(rsar[15:8] == 0) begin
-				if(rsar[2:0] < 6)
-					dout <= mac[rsar[2:0]];
-				else
-					dout <= 0;
-			end else begin
-				dout <= rx_buf_dout;
+	dout <= 8'h00;
+	if (ne_read) begin
+		// read is active ($faxxxx)
+		case (addr[4:3])
+			// registers (0x00 - 0x0f)
+			2'b00, 2'b01: begin
+				if (addr == 5'h00) begin
+					dout <= cr;
+				end else begin
+					case (ps)
+						// page 0
+						2'b00: begin
+							case (addr)
+								5'h03: dout <= bnry;
+								5'h04: dout <= 8'h23; // tsr: tx ok
+								5'h07: dout <= isr;
+								5'h08: dout <= rsar[7:0];
+								5'h09: dout <= rsar[15:8];
+								5'h0a: dout <= rbcr[7:0];
+								5'h0b: dout <= rbcr[15:8];
+								5'h0c: dout <= 8'h01; // rsr: rx ok
+								5'h0e: dout <= 8'h48; // dcfg: 8-bit, fifo=4
+								default: dout <= 8'h00;
+							endcase
+						end
+						// page 1
+						2'b01: begin
+							if ((addr >= 5'h01) && (addr <= 5'h06))
+								dout <= mac[addr - 5'h01];
+							else if (addr == 5'h07)
+								dout <= curr;
+							else
+								dout <= 8'h00;
+						end
+						// page 3
+						2'b11: begin
+							case (addr)
+								5'h01: dout <= { ee_cr[7:1], ee_do };
+								5'h03: dout <= 8'h18; // config0: rtl8019as, PnP
+								5'h05: dout <= 8'h40; // config2: 10Base-T active
+								5'h06: dout <= 8'h40; // config3: full duplex
+								default: dout <= 8'h00;
+							endcase
+						end
+						default: dout <= 8'h00;
+					endcase
+				end
 			end
-		end
-	end else begin
-		dout <= 0;
+			// remote dma (0x10 - 0x17)
+			2'b10: begin
+				if (ps != 3) begin
+					if (rsar[15:8] == 0) begin
+						dout <= (rsar[2:0] < 6) ? mac[rsar[2:0]] : 8'h00;
+					end else begin
+						dout <= rx_buf_dout;
+					end
+				end else begin
+					dout <= 8'h00;
+				end
+			end
+			// reset ports (0x18 - 0x1f)
+			2'b11: begin
+				dout <= 8'h00;
+			end
+		endcase
 	end
 end
 
@@ -283,7 +302,6 @@ wire int_begin = (reset & !resetD) || header_begin;
 // or adding the rx header 
 
 wire rx_write_en = (rx_strobe || int_strobe_en) && !int_begin;
-wire rx_write_begin = (!rx_begin_d & rx_begin) || int_begin;
 
 reg rx_last_byte;
 
@@ -316,16 +334,14 @@ always @(posedge clk) begin
 		endcase
 	end
 
-	if (rx_write_begin) begin
-		if (header_begin) begin
-			rx_w_cnt <= rx_start;
-		end else begin
-			rx_w_cnt <= rx_start + 4;
-		end
-	end else if(rx_write_en) begin
+	if (!rx_begin_d && rx_begin) begin
+		rx_w_cnt <= rx_start + 4;
+	end else if (header_begin) begin
+		rx_w_cnt <= rx_start;
+	end else if (rx_write_en) begin
 		if (rx_w_state != RX_W_IDLE) begin
 			rx_w_cnt <= rx_w_cnt + 1;
-		end 
+		end
 	end
 end
 
@@ -345,10 +361,8 @@ end
 
 // write counter - header size (4) = number of bytes written
 always @(posedge clk) begin
-	if (!rx_begin_d && rx_begin) begin
-		rx_len <= 11'd4;
-	end else if (rx_write_en && (rx_w_state == RX_W_DATA)) begin
-		rx_len <= rx_len + 11'd1;
+	if (rx_begin_d && !rx_begin) begin
+		rx_len <= rx_w_cnt - (rx_start + 4);
 	end
 end
 
@@ -368,7 +382,7 @@ always @(posedge clk) begin
 		// internals
 		rx_w_state <= RX_W_IDLE;
 		statusCode <= STATUS_IDLE;
-		next_page  <= curr + 8'd1;
+		next_page  <= pstart + 8'd1;
 		rx_inc     <= 1'b0;
 		tx_inc     <= 1'b0;
 		reset      <= 1'b0;
@@ -484,7 +498,7 @@ always @(posedge clk) begin
 					5'h02: pstop <= din;
 					5'h03: bnry <= din;
 					5'h05: tbcr[7:0] <= din;
-					5'h06: tbcr[15:8] <= din;
+					5'h06: tbcr[10:8] <= din[2:0];
 					5'h08: rsar[7:0] <= din;
 					5'h09: rsar[15:8] <= din;
 					5'h0a: rbcr[7:0] <= din;
