@@ -56,8 +56,8 @@ localparam STATUS_TX_DONE    = 8'h12;
 
 reg [7:0] statusCode;
 
-wire tx_ready = (statusCode == STATUS_TX_PENDING) && (rbcr == 0);
-assign status = { statusCode, 5'h00, tx_ready, isr[1:0], 5'h00, tbcr };
+wire tx_pending = cr[2] && (rbcr == 0);
+assign status = { statusCode, 5'h00, 1'd0 /*FIXME*/, isr[1:0], 5'h00, tbcr };
 
 localparam RX_W_IDLE   = 2'b00;
 localparam RX_W_DATA   = 2'b01;
@@ -121,7 +121,7 @@ end
 always @(posedge clk) begin
 	tx_byte <= tx_buffer[tx_r_cnt];
 
-	if (tx_done)
+	if (tx_ack)
 		tx_r_cnt <= 11'd0;
 	else if (tx_strobe_r2 & ~tx_strobe_r3)
 		tx_r_cnt <= tx_r_cnt + 11'd1;
@@ -137,7 +137,7 @@ always @(posedge clk) begin
 	rx_begin_d <= rx_begin;
 end
 
-wire tx_done = tx_begin_r2 & !tx_begin_r3;
+wire tx_ack = tx_begin_r2 & !tx_begin_r3;
 
 // ------------- set local mac address ------------
 reg [7:0] mac [5:0];
@@ -303,27 +303,32 @@ wire [7:0] header_byte =
 always @(posedge clk) begin
 	rx_last_byte <= 1'b0;
 
-	if((rx_w_state == RX_W_HEADER) && (rx_w_cnt[7:0] == 4))
+	if ((rx_w_state == RX_W_HEADER) && (rx_w_cnt == (rx_start + 4)))
 		rx_last_byte <= !int_begin;
 end
 
 // data transfer on other edge
 always @(posedge clk) begin
-	if (rx_write_en) begin
-		case (rx_w_state)
-			RX_W_DATA:   rx_buffer[rx_w_cnt] <= rx_byte;
-			RX_W_HEADER: rx_buffer[rx_w_cnt] <= header_byte;
-			default: ;
-		endcase
-	end
+	if (reset) begin
+		rx_w_cnt <= { curr[2:0], 8'h00 } + 11'd4;
+	end else begin
 
-	if (!rx_begin_d && rx_begin) begin
-		rx_w_cnt <= rx_start + 4;
-	end else if (header_begin) begin
-		rx_w_cnt <= rx_start;
-	end else if (rx_write_en) begin
-		if (rx_w_state != RX_W_IDLE) begin
-			rx_w_cnt <= rx_w_cnt + 1;
+		if (rx_write_en) begin
+			case (rx_w_state)
+				RX_W_DATA:   rx_buffer[rx_w_cnt] <= rx_byte;
+				RX_W_HEADER: rx_buffer[rx_w_cnt] <= header_byte;
+				default: ;
+			endcase
+		end
+
+		if (!rx_begin_d && rx_begin) begin
+			rx_w_cnt <= rx_start + 4;
+		end else if (header_begin) begin
+			rx_w_cnt <= rx_start;
+		end else if (rx_write_en) begin
+			if (rx_w_state != RX_W_IDLE) begin
+				rx_w_cnt <= rx_w_cnt + 1;
+			end
 		end
 	end
 end
@@ -344,7 +349,9 @@ end
 
 // write counter - header size (4) = number of bytes written
 always @(posedge clk) begin
-	if (rx_begin_d && !rx_begin) begin
+	if (reset) begin
+		rx_len <= 11'd0;
+	end else if (rx_begin_d && !rx_begin) begin
 		rx_len <= rx_w_cnt - (rx_start + 4);
 	end
 end
@@ -353,19 +360,21 @@ end
 always @(posedge clk) begin
 	// reset state
 	if (reset & !resetD) begin
-		bnry <= pstart;
-		curr <= pstart;
-		isr  <= 8'h80; // RST
-		imr  <= 8'h00;
-		cr   <= 8'h21;
-		rsar <= 0;
+		cr     <= 8'h21;
+		isr    <= 8'h80; // RST
+		imr    <= 8'h00;
+		bnry   <= 8'h40;
+		pstart <= 8'h40;
+		pstop  <= 8'h47;
+		curr   <= 8'h40;
+		rsar   <= 16'd0;
 		// ident of netusbee 1.1
 		rbcr[7:0]  <= 8'h50;
 		rbcr[15:8] <= 8'h70;
 		// internals
 		rx_w_state <= RX_W_IDLE;
 		statusCode <= STATUS_IDLE;
-		next_page  <= pstart + 8'd1;
+		next_page  <= 8'h41;
 		rx_inc     <= 1'b0;
 		tx_inc     <= 1'b0;
 		reset      <= 1'b0;
@@ -425,7 +434,7 @@ always @(posedge clk) begin
 
 		// signal end of transmission if tx buffer has been read by
 		// io controller
-		if (tx_done) begin
+		if (tx_ack) begin
 			isr <= isr | 8'h02; // PTX
 			statusCode <= STATUS_TX_DONE;
 			cr[2] <= 1'b0;
