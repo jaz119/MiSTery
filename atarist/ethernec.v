@@ -122,9 +122,9 @@ always @(posedge clk) begin
 	tx_byte <= tx_buffer[tx_r_cnt];
 
 	if (tx_done)
-		tx_r_cnt <= 0;
+		tx_r_cnt <= 11'd0;
 	else if (tx_strobe_r2 & ~tx_strobe_r3)
-		tx_r_cnt <= tx_r_cnt + 1'd1;
+		tx_r_cnt <= tx_r_cnt + 11'd1;
 end
 
 reg tx_begin_r, tx_begin_r2, tx_begin_r3;
@@ -161,7 +161,6 @@ reg [3:0]  ee_bit_cnt;
 reg [15:0] ee_shift_reg;
 reg        ee_sclk_D;
 
-// page 3 write selector
 wire ee_reg_write = ne_write_en && (ps == 3) && (addr == 1);
 wire ee_reset     = ee_reg_write ? !din[3] : !ee_cr[3];
 
@@ -215,73 +214,62 @@ end
 
 wire ee_do = (ee_bit_cnt >= 10) ? ee_shift_reg[15] : 1'b0;
 
+reg [7:0] reg_do;
+
+always @(*) begin
+	reg_do = 8'h00; 
+
+	casez ({ps, addr})
+		// page 0
+		{2'b00, 5'h00}: reg_do = cr;
+		{2'b00, 5'h03}: reg_do = bnry;
+		{2'b00, 5'h04}: reg_do = 8'h23; // tsr: tx ok
+		{2'b00, 5'h07}: reg_do = isr;
+		{2'b00, 5'h08}: reg_do = rsar[7:0];
+		{2'b00, 5'h09}: reg_do = rsar[15:8];
+		{2'b00, 5'h0a}: reg_do = rbcr[7:0];
+		{2'b00, 5'h0b}: reg_do = rbcr[15:8];
+		{2'b00, 5'h0c}: reg_do = 8'h01; // rsr: rx ok
+		{2'b00, 5'h0e}: reg_do = 8'h48; // dcfg: 8-bit, fifo=4
+
+		// page 1
+		{2'b01, 5'h00}: reg_do = cr;
+		{2'b01, 5'h01}: reg_do = mac[0];
+		{2'b01, 5'h02}: reg_do = mac[1];
+		{2'b01, 5'h03}: reg_do = mac[2];
+		{2'b01, 5'h04}: reg_do = mac[3];
+		{2'b01, 5'h05}: reg_do = mac[4];
+		{2'b01, 5'h06}: reg_do = mac[5];
+		{2'b01, 5'h07}: reg_do = curr;
+
+		// page 3
+		{2'b11, 5'h00}: reg_do = cr;
+		{2'b11, 5'h01}: reg_do = { ee_cr[7:1], ee_do };
+		{2'b11, 5'h03}: reg_do = 8'h18; // config0: rtl8019as, PnP
+		{2'b11, 5'h05}: reg_do = 8'h40; // config2: 10Base-T active
+		{2'b11, 5'h06}: reg_do = 8'h40; // config3: full duplex
+
+		// remote dma (0x10 - 0x17)
+		{2'b00, 5'b10???}, 
+		{2'b01, 5'b10???}: begin
+			if (rsar[15:8] == 0) begin
+				reg_do = (rsar[2:0] < 6) ? mac[rsar[2:0]] : 8'h00;
+			end else begin
+				reg_do = rx_buf_dout;
+			end
+		end
+
+		default: reg_do = 8'h00;
+	endcase
+end
+
 // cpu register read
 always @(posedge clk) begin
-	dout <= 8'h00;
 	if (ne_read) begin
 		// read is active ($faxxxx)
-		case (addr[4:3])
-			// registers (0x00 - 0x0f)
-			2'b00, 2'b01: begin
-				if (addr == 5'h00) begin
-					dout <= cr;
-				end else begin
-					case (ps)
-						// page 0
-						2'b00: begin
-							case (addr)
-								5'h03: dout <= bnry;
-								5'h04: dout <= 8'h23; // tsr: tx ok
-								5'h07: dout <= isr;
-								5'h08: dout <= rsar[7:0];
-								5'h09: dout <= rsar[15:8];
-								5'h0a: dout <= rbcr[7:0];
-								5'h0b: dout <= rbcr[15:8];
-								5'h0c: dout <= 8'h01; // rsr: rx ok
-								5'h0e: dout <= 8'h48; // dcfg: 8-bit, fifo=4
-								default: dout <= 8'h00;
-							endcase
-						end
-						// page 1
-						2'b01: begin
-							if ((addr >= 5'h01) && (addr <= 5'h06))
-								dout <= mac[addr - 5'h01];
-							else if (addr == 5'h07)
-								dout <= curr;
-							else
-								dout <= 8'h00;
-						end
-						// page 3
-						2'b11: begin
-							case (addr)
-								5'h01: dout <= { ee_cr[7:1], ee_do };
-								5'h03: dout <= 8'h18; // config0: rtl8019as, PnP
-								5'h05: dout <= 8'h40; // config2: 10Base-T active
-								5'h06: dout <= 8'h40; // config3: full duplex
-								default: dout <= 8'h00;
-							endcase
-						end
-						default: dout <= 8'h00;
-					endcase
-				end
-			end
-			// remote dma (0x10 - 0x17)
-			2'b10: begin
-				if (ps != 3) begin
-					if (rsar[15:8] == 0) begin
-						dout <= (rsar[2:0] < 6) ? mac[rsar[2:0]] : 8'h00;
-					end else begin
-						dout <= rx_buf_dout;
-					end
-				end else begin
-					dout <= 8'h00;
-				end
-			end
-			// reset ports (0x18 - 0x1f)
-			2'b11: begin
-				dout <= 8'h00;
-			end
-		endcase
+		dout <= reg_do;
+	end else begin
+		dout <= 8'h00;
 	end
 end
 
@@ -290,16 +278,11 @@ reg resetD;
 // delay internal reset signal
 always @(posedge clk) resetD <= reset;
 
-// generate an internal strobe signal to copy mac address and to setup header
+// generate an internal strobe signal to copy setup header
 wire int_strobe_en = (rx_w_state == RX_W_HEADER) ? 1'b1 : 1'b0;
 
-// internal mac transfer is started at the begin of the reset, internal header
-// transfer is started at the end of the data transmission
+// internal header transfer is started at the end of the data transmission
 wire int_begin = (reset & !resetD) || header_begin;
-
-// Several sources can write into the rx_buffer. The user_io SPI client receiving 
-// data from the io controller or the ethernec core itself setting the mac address
-// or adding the rx header 
 
 wire rx_write_en = (rx_strobe || int_strobe_en) && !int_begin;
 
