@@ -72,12 +72,13 @@ wire ne_read = rd;
 wire ne_write = wr;
 
 reg ne_readD, ne_writeD;
+
 always @(posedge clk) begin
 	ne_readD <= ne_read;
 	ne_writeD <= ne_write;
 end
 
-wire ne_read_en = ~ne_read & ne_readD;
+wire ne_read_en  = ~ne_read  & ne_readD;
 wire ne_write_en = ~ne_write & ne_writeD;
 
 reg reset = 1'b1;
@@ -100,7 +101,7 @@ wire [2:0] dma_cmd = din[5:3];        // remote DMA command
 wire dma_port = (addr[4:3] == 2'b10); // DMA ports ($10-$17)
 wire rst_port = (addr[4:3] == 2'b11); // reset ports ($18-$1F)
 
-// ------------- rx/tx buffers ------------
+// ----------------- rx/tx buffers ------------------
 localparam BUF_SIZE = 2048;           // to logic simplify
 
 (* ramstyle = "no_rw_check, M9K" *)
@@ -111,35 +112,35 @@ reg [10:0] rx_w_cnt = 0;              // receive buffer byte counter
 reg [7:0] tx_buffer [BUF_SIZE-1:0];   // 1 ethernet frame
 reg [10:0] tx_r_cnt = 0;              // transmit buffer byte counter
 
-reg [7:0] rx_buf_dout;
+reg [7:0] rx_buffer_do;
 
 always @(posedge clk) begin
-    rx_buf_dout <= rx_buffer[rsar[10:0]];
+	rx_buffer_do <= rx_buffer[rsar[10:0]];
 end
 
-// ------------- io controller read access to tx buffer ------------
+// ----- io controller read access to tx buffer -----
+reg [2:0] tx_begin_sr;
+reg [2:0] tx_strobe_sr;
+reg       rx_begin_d;
+
+always @(posedge clk) begin
+	tx_begin_sr  <= { tx_begin_sr[1:0],  tx_begin  };
+	tx_strobe_sr <= { tx_strobe_sr[1:0], tx_strobe };
+	rx_begin_d   <= rx_begin;
+end
+
+wire tx_done = tx_begin_sr[1] & ~tx_begin_sr[2];
+
 always @(posedge clk) begin
 	tx_byte <= tx_buffer[tx_r_cnt];
 
-	if (tx_ack)
+	if (tx_done)
 		tx_r_cnt <= 11'd0;
-	else if (tx_strobe_r2 & ~tx_strobe_r3)
+	else if (tx_strobe_sr[1] & ~tx_strobe_sr[2])
 		tx_r_cnt <= tx_r_cnt + 11'd1;
 end
 
-reg tx_begin_r, tx_begin_r2, tx_begin_r3;
-reg tx_strobe_r, tx_strobe_r2, tx_strobe_r3;
-reg rx_begin_d;
-
-always @(posedge clk) begin
-	{tx_begin_r3, tx_begin_r2, tx_begin_r} <= {tx_begin_r2, tx_begin_r, tx_begin};
-	{tx_strobe_r3, tx_strobe_r2, tx_strobe_r} <= {tx_strobe_r2, tx_strobe_r, tx_strobe};
-	rx_begin_d <= rx_begin;
-end
-
-wire tx_ack = tx_begin_r2 & !tx_begin_r3;
-
-// ------------- set local mac address ------------
+// ------------- set local mac address --------------
 reg [7:0] mac [5:0];
 reg [2:0] mac_cnt;
 
@@ -155,7 +156,7 @@ always @(posedge clk) begin
 	end
 end
 
-// ------- NetUSBee: 93C46 eeprom mac-read stub -------
+// ------ NetUSBee: 93C46 eeprom mac-read stub ------
 reg [7:0]  ee_cr;
 reg [3:0]  ee_bit_cnt;
 reg [15:0] ee_shift_reg;
@@ -219,43 +220,43 @@ reg [7:0] reg_do;
 always @(*) begin
 	reg_do = 8'h00; 
 
-	casez ({ps, addr})
+	casez ({ ps, addr })
 		// page 0
-		{2'b00, 5'h00}: reg_do = cr;
-		{2'b00, 5'h03}: reg_do = bnry;
-		{2'b00, 5'h04}: reg_do = 8'h23; // tsr: tx ok
-		{2'b00, 5'h07}: reg_do = isr;
-		{2'b00, 5'h08}: reg_do = rsar[7:0];
-		{2'b00, 5'h09}: reg_do = rsar[15:8];
-		{2'b00, 5'h0a}: reg_do = rbcr[7:0];
-		{2'b00, 5'h0b}: reg_do = rbcr[15:8];
-		{2'b00, 5'h0c}: reg_do = 8'h01; // rsr: rx ok
-		{2'b00, 5'h0e}: reg_do = 8'h48; // dcfg: 8-bit, fifo=4
+		{ 2'b00, 5'h00 }: reg_do = cr;
+		{ 2'b00, 5'h03 }: reg_do = bnry;
+		{ 2'b00, 5'h04 }: reg_do = 8'h23; // tsr: tx ok
+		{ 2'b00, 5'h07 }: reg_do = isr;
+		{ 2'b00, 5'h08 }: reg_do = rsar[7:0];
+		{ 2'b00, 5'h09 }: reg_do = rsar[15:8];
+		{ 2'b00, 5'h0a }: reg_do = rbcr[7:0];
+		{ 2'b00, 5'h0b }: reg_do = rbcr[15:8];
+		{ 2'b00, 5'h0c }: reg_do = 8'h01; // rsr: rx ok
+		{ 2'b00, 5'h0e }: reg_do = 8'h48; // dcfg: 8-bit, fifo=4
 
 		// page 1
-		{2'b01, 5'h00}: reg_do = cr;
-		{2'b01, 5'h01}: reg_do = mac[0];
-		{2'b01, 5'h02}: reg_do = mac[1];
-		{2'b01, 5'h03}: reg_do = mac[2];
-		{2'b01, 5'h04}: reg_do = mac[3];
-		{2'b01, 5'h05}: reg_do = mac[4];
-		{2'b01, 5'h06}: reg_do = mac[5];
-		{2'b01, 5'h07}: reg_do = curr;
+		{ 2'b01, 5'h00 }: reg_do = cr;
+		{ 2'b01, 5'h01 }: reg_do = mac[0];
+		{ 2'b01, 5'h02 }: reg_do = mac[1];
+		{ 2'b01, 5'h03 }: reg_do = mac[2];
+		{ 2'b01, 5'h04 }: reg_do = mac[3];
+		{ 2'b01, 5'h05 }: reg_do = mac[4];
+		{ 2'b01, 5'h06 }: reg_do = mac[5];
+		{ 2'b01, 5'h07 }: reg_do = curr;
 
 		// page 3
-		{2'b11, 5'h00}: reg_do = cr;
-		{2'b11, 5'h01}: reg_do = { ee_cr[7:1], ee_do };
-		{2'b11, 5'h03}: reg_do = 8'h18; // config0: rtl8019as, PnP
-		{2'b11, 5'h05}: reg_do = 8'h40; // config2: 10Base-T active
-		{2'b11, 5'h06}: reg_do = 8'h40; // config3: full duplex
+		{ 2'b11, 5'h00 }: reg_do = cr;
+		{ 2'b11, 5'h01 }: reg_do = { ee_cr[7:1], ee_do };
+		{ 2'b11, 5'h03 }: reg_do = 8'h18; // config0: rtl8019as, PnP
+		{ 2'b11, 5'h05 }: reg_do = 8'h40; // config2: 10Base-T active
+		{ 2'b11, 5'h06 }: reg_do = 8'h40; // config3: full duplex
 
 		// remote dma (0x10 - 0x17)
-		{2'b00, 5'b10???}, 
-		{2'b01, 5'b10???}: begin
+		{ 2'b00, 5'b10??? }, 
+		{ 2'b01, 5'b10??? }: begin
 			if (rsar[15:8] == 0) begin
 				reg_do = (rsar[2:0] < 6) ? mac[rsar[2:0]] : 8'h00;
 			end else begin
-				reg_do = rx_buf_dout;
+				reg_do = rx_buffer_do;
 			end
 		end
 
@@ -268,8 +269,6 @@ always @(posedge clk) begin
 	if (ne_read) begin
 		// read is active ($faxxxx)
 		dout <= reg_do;
-	end else begin
-		dout <= 8'h00;
 	end
 end
 
@@ -341,17 +340,14 @@ reg header_begin;
 
 // generate flag indicating that a header transfer is about to begin
 always @(posedge clk) begin
-	header_begin <= 1'b0;
-
-	if (rx_begin_d & !rx_begin)
-		header_begin <= 1'b1;
+	header_begin <= (rx_begin_d & ~rx_begin);
 end
 
 // write counter - header size (4) = number of bytes written
 always @(posedge clk) begin
 	if (reset) begin
 		rx_len <= 11'd0;
-	end else if (rx_begin_d && !rx_begin) begin
+	end else if (rx_begin_d && ~rx_begin) begin
 		rx_len <= rx_w_cnt - (rx_start + 4);
 	end
 end
@@ -398,7 +394,7 @@ always @(posedge clk) begin
 				isr  <= isr | 8'h01; // PRX
 				curr <= next_page;
 
-				if ((next_page + 8'd1) == (pstart + 8'd8) || (next_page + 8'd1) == pstop)
+				if (next_page >= pstop - 1'b1)
 					next_page <= pstart;
 				else
 					next_page <= next_page + 8'd1;
@@ -423,7 +419,7 @@ always @(posedge clk) begin
 			rsar <= rsar + 1'b1;
 
 			if (rbcr != 0) begin
-				rbcr <= rbcr - 1;
+				rbcr <= rbcr - 1'b1;
 
 				if (rbcr == 1) begin
 					cr[5:3] <= 3'b011; 
@@ -434,7 +430,7 @@ always @(posedge clk) begin
 
 		// signal end of transmission if tx buffer has been read by
 		// io controller
-		if (tx_ack) begin
+		if (tx_done) begin
 			isr <= isr | 8'h02; // PTX
 			statusCode <= STATUS_TX_DONE;
 			cr[2] <= 1'b0;
@@ -457,14 +453,14 @@ always @(posedge clk) begin
 
 			// read reset register $18-$1f
 			if (rst_port) begin
-				reset <= 1'b1;      // read to reset register sets reset
+				reset <= 1'b1; // soft reset
 				statusCode <= STATUS_IDLE;
 				rx_w_state <= RX_W_IDLE;
 			end
 		end
 
-		if(ne_write_en) begin
-			if(addr == 0) begin
+		if (ne_write_en) begin
+			if (addr == 0) begin
 				cr <= din;
 
 				// writing the command register may actually start things ...
@@ -504,10 +500,10 @@ always @(posedge clk) begin
 			if (ps == 1) begin
 				if (addr == 7) begin
 					curr <= din;
-					if ((din + 8'd1) == (pstart + 8'd8) || (din + 8'd1) == pstop)
+					if (din >= pstop - 1'b1)
 						next_page <= pstart;
 					else
-						next_page <= din + 8'd1;
+						next_page <= din + 1'b1;
 				end
 			end
 
