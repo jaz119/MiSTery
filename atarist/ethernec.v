@@ -19,6 +19,18 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 
+`define SHIFT_REG(reg_name, depth, in_signal) \
+    reg [depth-1:0] reg_name; \
+    always @(posedge clk) begin \
+        reg_name <= {reg_name[depth-2:0], in_signal}; \
+    end
+
+`define DELAY_REG(reg_name, in_signal) \
+    reg reg_name; \
+    always @(posedge clk) begin \
+        reg_name <= in_signal; \
+    end
+
 module ethernec (
 	// cpu register interface
 	input            clk,
@@ -46,7 +58,7 @@ module ethernec (
 	input            mac_strobe, // rising edge before each mac byte
 	input      [7:0] mac_byte,   // mac address byte
 
-	output           ne_int      // interrupt occured
+	output           int         // NE2000 interrupt
 );
 
 // some non-zero and non-all-ones bytes as status flags
@@ -56,32 +68,30 @@ localparam STATUS_TX_DONE    = 8'h12;
 
 reg [7:0] statusCode;
 
-wire tx_pending = cr[2] && (rbcr == 0);
-assign status = { statusCode, 5'h00, 1'd0 /*FIXME*/, isr[1:0], 5'h00, tbcr };
+// code[31:24], tx_ready[18], tx_ack[17], rx_busy[16], tx_count[15:0]
+assign status = { statusCode, 5'h00, tx_ready, isr[1:0], 5'h00, tbcr };
 
 localparam RX_W_IDLE   = 2'b00;
 localparam RX_W_DATA   = 2'b01;
 localparam RX_W_HEADER = 2'b10;
 
-reg [1:0] rx_w_state   = RX_W_IDLE;
+reg [1:0] rx_w_state = RX_W_IDLE;
+
+reg reset = 1'b1;
+
+// delay internal reset signal
+`DELAY_REG(reset_d, reset)
+
+wire reset_pe = reset & ~reset_d;
 
 // ----- bus interface signals as wired up on the ethernec/netusbee ------
 // sel[0] = 0xfa0000 -> normal read
 // sel[1] = 0xfb0000 -> write through address bus
-wire ne_read = rd;
-wire ne_write = wr;
+`DELAY_REG(rd_d, rd)
+`DELAY_REG(wr_d, wr)
 
-reg ne_readD, ne_writeD;
-
-always @(posedge clk) begin
-	ne_readD <= ne_read;
-	ne_writeD <= ne_write;
-end
-
-wire ne_read_en  = ~ne_read  & ne_readD;
-wire ne_write_en = ~ne_write & ne_writeD;
-
-reg reset = 1'b1;
+wire rd_ne = ~rd & rd_d;
+wire wr_ne = ~wr & wr_d;
 
 // ---------- ne2000 internal registers -------------
 reg [7:0]  cr;             // command register
@@ -96,6 +106,7 @@ reg [15:0] rsar;           // receiver address register
 reg [10:0] tbcr;           // transmitter byte count register
 
 wire [1:0] ps = cr[7:6];              // register page select
+wire tx_ready = cr[2] & ~cr[0];       // frame is ready to xmit
 wire [2:0] dma_cmd = din[5:3];        // remote DMA command
 
 wire dma_port = (addr[4:3] == 2'b10); // DMA ports ($10-$17)
@@ -118,25 +129,39 @@ always @(posedge clk) begin
 	rx_buffer_do <= rx_buffer[rsar[10:0]];
 end
 
-// ----- io controller read access to tx buffer -----
-reg [2:0] tx_begin_sr;
-reg [2:0] tx_strobe_sr;
-reg       rx_begin_d;
+// ---------- io controller signals resync -----------
+`SHIFT_REG(tx_begin_sr, 3, tx_begin)
 
-always @(posedge clk) begin
-	tx_begin_sr  <= { tx_begin_sr[1:0],  tx_begin  };
-	tx_strobe_sr <= { tx_strobe_sr[1:0], tx_strobe };
-	rx_begin_d   <= rx_begin;
-end
+wire tx_start =  tx_begin_sr[1] & ~tx_begin_sr[2];
+wire tx_stop  = ~tx_begin_sr[1] &  tx_begin_sr[2];
 
-wire tx_done = tx_begin_sr[1] & ~tx_begin_sr[2];
+`SHIFT_REG(tx_strobe_sr, 2, tx_strobe)
+
+wire tx_strobe_pe = tx_strobe_sr[0] & ~tx_strobe_sr[1];
+
+`SHIFT_REG(rx_begin_sr, 3, rx_begin)
+
+wire rx_start =  rx_begin_sr[1] & ~rx_begin_sr[2];
+wire rx_stop  = ~rx_begin_sr[1] &  rx_begin_sr[2];
+
+`SHIFT_REG(rx_strobe_sr, 2, rx_strobe)
+
+wire rx_strobe_pe = rx_strobe_sr[0] & ~rx_strobe_sr[1];
+
+`SHIFT_REG(mac_begin_sr, 3, mac_begin)
+
+wire mac_start = mac_begin_sr[1]  & ~mac_begin_sr[2];
+
+`SHIFT_REG(mac_strobe_sr, 2, mac_strobe)
+
+wire mac_strobe_pe = mac_strobe_sr[0] & ~mac_strobe_sr[1];
 
 always @(posedge clk) begin
 	tx_byte <= tx_buffer[tx_r_cnt];
 
-	if (tx_done)
+	if (tx_start)
 		tx_r_cnt <= 11'd0;
-	else if (tx_strobe_sr[1] & ~tx_strobe_sr[2])
+	else if (tx_strobe_pe)
 		tx_r_cnt <= tx_r_cnt + 11'd1;
 end
 
@@ -146,9 +171,9 @@ reg [2:0] mac_cnt;
 
 // mac address from io controller
 always @(posedge clk) begin
-	if (mac_begin)
+	if (mac_start)
 		mac_cnt <= 0;
-	else if (mac_strobe) begin
+	else if (mac_strobe_pe) begin
 		if (mac_cnt < 6) begin
 			mac[mac_cnt] <= mac_byte;
 			mac_cnt <= mac_cnt + 3'd1;
@@ -160,17 +185,17 @@ end
 reg [7:0]  ee_cr;
 reg [3:0]  ee_bit_cnt;
 reg [15:0] ee_shift_reg;
-reg        ee_sclk_D;
+reg        ee_sclk_d;
 
-wire ee_reg_write = ne_write_en && (ps == 3) && (addr == 1);
+wire ee_reg_write = wr_ne && (ps == 3) && (addr == 1);
 wire ee_reset     = ee_reg_write ? !din[3] : !ee_cr[3];
 
-wire ee_sclk_posedge =  ee_cr[2] && !ee_sclk_D;
-wire ee_sclk_negedge = !ee_cr[2] &&  ee_sclk_D;
+wire ee_sclk_pe =  ee_cr[2] & ~ee_sclk_d;
+wire ee_sclk_ne = ~ee_cr[2] &  ee_sclk_d;
 
 always @(posedge clk) begin
-	if (reset) ee_sclk_D <= 1'b0;
-	else       ee_sclk_D <= ee_cr[2];
+	if (reset) ee_sclk_d <= 1'b0;
+	else       ee_sclk_d <= ee_cr[2];
 end
 
 always @(posedge clk) begin
@@ -188,7 +213,7 @@ always @(posedge clk) begin
 			ee_shift_reg <= 0;
 		end else begin
 
-			if (ee_sclk_posedge) begin
+			if (ee_sclk_pe) begin
 				if (ee_bit_cnt < 15)
 					ee_bit_cnt <= ee_bit_cnt + 1;
 
@@ -196,7 +221,7 @@ always @(posedge clk) begin
 					ee_shift_reg <= { ee_shift_reg[14:0], ee_cr[1] };
 			end
 
-			if (ee_sclk_negedge) begin
+			if (ee_sclk_ne) begin
 				if (ee_bit_cnt == 10) begin
 					case (ee_shift_reg[2:0])
 						3'b010:  ee_shift_reg <= { mac[1], mac[0] };
@@ -266,30 +291,25 @@ end
 
 // cpu register read
 always @(posedge clk) begin
-	if (ne_read) begin
+	if (rd) begin
 		// read is active ($faxxxx)
 		dout <= reg_do;
 	end
 end
 
-reg resetD;
-
-// delay internal reset signal
-always @(posedge clk) resetD <= reset;
-
 // generate an internal strobe signal to copy setup header
-wire int_strobe_en = (rx_w_state == RX_W_HEADER) ? 1'b1 : 1'b0;
+wire is_wr_header = (rx_w_state == RX_W_HEADER);
 
 // internal header transfer is started at the end of the data transmission
-wire int_begin = (reset & !resetD) || header_begin;
+wire block_wr_cycle = reset_pe || header_begin;
 
-wire rx_write_en = (rx_strobe || int_strobe_en) && !int_begin;
+wire rx_write_en = (rx_strobe_pe || is_wr_header) && !block_wr_cycle;
 
 reg rx_last_byte;
 
 // the ne2000 page size is 256 bytes. thus the page counters are increased
 // every 256 bytes when a data transfer is in progress.
-wire [10:0] rx_start = { curr[2:0], 8'h00 };
+wire [10:0] rx_offs = { curr[2:0], 8'h00 };
 
 reg [10:0] rx_len; // number of bytes received from io controller
 reg [7:0] next_page;
@@ -302,8 +322,8 @@ wire [7:0] header_byte =
 always @(posedge clk) begin
 	rx_last_byte <= 1'b0;
 
-	if ((rx_w_state == RX_W_HEADER) && (rx_w_cnt == (rx_start + 4)))
-		rx_last_byte <= !int_begin;
+	if ((rx_w_state == RX_W_HEADER) && (rx_w_cnt == (rx_offs + 4)))
+		rx_last_byte <= !block_wr_cycle;
 end
 
 // data transfer on other edge
@@ -320,10 +340,10 @@ always @(posedge clk) begin
 			endcase
 		end
 
-		if (!rx_begin_d && rx_begin) begin
-			rx_w_cnt <= rx_start + 4;
+		if (rx_start) begin
+			rx_w_cnt <= rx_offs + 4;
 		end else if (header_begin) begin
-			rx_w_cnt <= rx_start;
+			rx_w_cnt <= rx_offs;
 		end else if (rx_write_en) begin
 			if (rx_w_state != RX_W_IDLE) begin
 				rx_w_cnt <= rx_w_cnt + 1;
@@ -340,22 +360,22 @@ reg header_begin;
 
 // generate flag indicating that a header transfer is about to begin
 always @(posedge clk) begin
-	header_begin <= (rx_begin_d & ~rx_begin);
+	header_begin <= rx_stop;
 end
 
 // write counter - header size (4) = number of bytes written
 always @(posedge clk) begin
 	if (reset) begin
 		rx_len <= 11'd0;
-	end else if (rx_begin_d && ~rx_begin) begin
-		rx_len <= rx_w_cnt - (rx_start + 4);
+	end else if (rx_stop) begin
+		rx_len <= rx_w_cnt - (rx_offs + 4);
 	end
 end
 
 // cpu write via read
 always @(posedge clk) begin
 	// reset state
-	if (reset & !resetD) begin
+	if (reset_pe) begin
 		cr     <= 8'h21;
 		isr    <= 8'h80; // RST
 		imr    <= 8'h00;
@@ -376,7 +396,7 @@ always @(posedge clk) begin
 		reset      <= 1'b0;
 	end else begin
 
-		if (ne_write_en && (ps == 0) && (addr == 7)) begin
+		if (wr_ne && (ps == 0) && (addr == 7)) begin
 			isr <= isr & (~din); // writing 1 clears bit
 
 			if (din[1]) begin
@@ -402,13 +422,13 @@ always @(posedge clk) begin
 		end
 
 		// The rising edge of rx_begin indicates the start of a data transfer
-		if (!rx_begin_d && rx_begin) begin
+		if (rx_start) begin
 			rx_w_state <= RX_W_DATA;
 		end
 
 		// The falling edge of rx_begin marks the end of a data transfer.
 		// So we start setting up the pkt header after the end of the transfer
-		if (rx_begin_d && !rx_begin) begin
+		if (rx_stop) begin
 			rx_w_state <= RX_W_HEADER;
 		end
 
@@ -422,7 +442,7 @@ always @(posedge clk) begin
 				rbcr <= rbcr - 1'b1;
 
 				if (rbcr == 1) begin
-					cr[5:3] <= 3'b011; 
+					cr[5:3] <= 3'b011;
 					isr     <= isr | 8'h40; // RDC
 				end
 			end
@@ -430,7 +450,7 @@ always @(posedge clk) begin
 
 		// signal end of transmission if tx buffer has been read by
 		// io controller
-		if (tx_done) begin
+		if (tx_stop) begin
 			isr <= isr | 8'h02; // PTX
 			statusCode <= STATUS_TX_DONE;
 			cr[2] <= 1'b0;
@@ -438,7 +458,7 @@ always @(posedge clk) begin
 
 		// if cpu reads have internal side effects then ths is handled
 		// here (and not in the "register read" block above)
-		if (ne_read_en) begin
+		if (rd_ne) begin
 			// register page 0
 			if (ps == 0) begin
 			end
@@ -459,7 +479,7 @@ always @(posedge clk) begin
 			end
 		end
 
-		if (ne_write_en) begin
+		if (wr_ne) begin
 			if (addr == 0) begin
 				cr <= din;
 
@@ -521,6 +541,6 @@ always @(posedge clk) begin
 end
 
 // INT if not reset, not masked and not stopped
-assign ne_int = (| (isr & imr)) && !reset && !cr[0];
+assign int = (| (isr & imr)) && !reset && !cr[0];
 
 endmodule
