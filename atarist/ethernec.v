@@ -61,15 +61,8 @@ module ethernec (
 	output           int         // NE2000 interrupt
 );
 
-// some non-zero and non-all-ones bytes as status flags
-localparam STATUS_IDLE       = 8'hfe;
-localparam STATUS_TX_PENDING = 8'ha5;
-localparam STATUS_TX_DONE    = 8'h12;
-
-reg [7:0] statusCode;
-
-// code[31:24], tx_ready[18], tx_ack[17], rx_busy[16], tx_count[15:0]
-assign status = { statusCode, 5'h00, tx_ready, isr[1:0], 5'h00, tbcr };
+// tx_ready[18], tx_ack[17], rx_busy[16], tx_count[15:0]
+assign status = { 8'h00, 5'h00, tx_ready, isr[1:0], 5'h00, tbcr };
 
 localparam RX_W_IDLE   = 2'b00;
 localparam RX_W_DATA   = 2'b01;
@@ -77,7 +70,7 @@ localparam RX_W_HEADER = 2'b10;
 
 reg [1:0] rx_w_state = RX_W_IDLE;
 
-reg reset = 1'b1;
+reg reset;
 
 // delay internal reset signal
 `DELAY_REG(reset_d, reset)
@@ -298,12 +291,11 @@ always @(posedge clk) begin
 end
 
 // generate an internal strobe signal to copy setup header
-wire is_wr_header = (rx_w_state == RX_W_HEADER);
+wire is_header = (rx_w_state == RX_W_HEADER);
 
 // internal header transfer is started at the end of the data transmission
 wire block_wr_cycle = reset_pe || header_begin;
-
-wire rx_write_en = (rx_strobe_pe || is_wr_header) && !block_wr_cycle;
+wire rx_write_en = (rx_strobe_pe || is_header) && !block_wr_cycle;
 
 reg rx_last_byte;
 
@@ -322,7 +314,7 @@ wire [7:0] header_byte =
 always @(posedge clk) begin
 	rx_last_byte <= 1'b0;
 
-	if ((rx_w_state == RX_W_HEADER) && (rx_w_cnt == (rx_offs + 4)))
+	if (is_header && (rx_w_cnt == (rx_offs + 3)))
 		rx_last_byte <= !block_wr_cycle;
 end
 
@@ -331,7 +323,6 @@ always @(posedge clk) begin
 	if (reset) begin
 		rx_w_cnt <= { curr[2:0], 8'h00 } + 11'd4;
 	end else begin
-
 		if (rx_write_en) begin
 			case (rx_w_state)
 				RX_W_DATA:   rx_buffer[rx_w_cnt] <= rx_byte;
@@ -342,7 +333,7 @@ always @(posedge clk) begin
 
 		if (rx_start) begin
 			rx_w_cnt <= rx_offs + 4;
-		end else if (header_begin) begin
+		end else if (rx_stop) begin
 			rx_w_cnt <= rx_offs;
 		end else if (rx_write_en) begin
 			if (rx_w_state != RX_W_IDLE) begin
@@ -389,7 +380,6 @@ always @(posedge clk) begin
 		rbcr[15:8] <= 8'h70;
 		// internals
 		rx_w_state <= RX_W_IDLE;
-		statusCode <= STATUS_IDLE;
 		next_page  <= 8'h41;
 		rx_inc     <= 1'b0;
 		tx_inc     <= 1'b0;
@@ -398,11 +388,6 @@ always @(posedge clk) begin
 
 		if (wr_ne && (ps == 0) && (addr == 7)) begin
 			isr <= isr & (~din); // writing 1 clears bit
-
-			if (din[1]) begin
-				// clear PTX
-				statusCode <= STATUS_IDLE;
-			end
 		end
 
 		// last byte ends a mac or header transfer and causes the
@@ -410,7 +395,7 @@ always @(posedge clk) begin
 		if (rx_last_byte) begin
 			rx_w_state <= RX_W_IDLE;
 
-			if (rx_w_state == RX_W_HEADER) begin
+			if (is_header) begin
 				isr  <= isr | 8'h01; // PRX
 				curr <= next_page;
 
@@ -452,7 +437,6 @@ always @(posedge clk) begin
 		// io controller
 		if (tx_stop) begin
 			isr <= isr | 8'h02; // PTX
-			statusCode <= STATUS_TX_DONE;
 			cr[2] <= 1'b0;
 		end
 
@@ -474,7 +458,6 @@ always @(posedge clk) begin
 			// read reset register $18-$1f
 			if (rst_port) begin
 				reset <= 1'b1; // soft reset
-				statusCode <= STATUS_IDLE;
 				rx_w_state <= RX_W_IDLE;
 			end
 		end
@@ -489,13 +472,6 @@ always @(posedge clk) begin
 				if (dma_cmd == 4) begin
 					isr <= isr | 8'h40; // RDC
 					rbcr <= 0;
-				end
-
-				// check if TX bit was set
-				if (din[2]) begin
-					// tx buffer is now full and its contents need to be sent to
-					// the io controller which in turn forwards it to its own nic
-					statusCode <= STATUS_TX_PENDING;
 				end
 			end
 
