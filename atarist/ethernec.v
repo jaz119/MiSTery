@@ -95,10 +95,10 @@ end
 // ----------------- rx/tx buffers ------------------
 localparam BUF_SIZE = 2048;
 
-reg [7:0] rx_buffer[BUF_SIZE-1:0];    // 1 ethernet frame + 4 bytes header
+reg  [7:0] rx_buffer[BUF_SIZE-1:0];   // 4 bytes offset + 1 ethernet frame
 reg [10:0] rx_w_cnt;                  // receive buffer byte counter
 
-reg [7:0] tx_buffer[BUF_SIZE-1:0];    // 1 ethernet frame
+reg  [7:0] tx_buffer[BUF_SIZE-1:0];   // 1 ethernet frame
 reg [10:0] tx_r_cnt;                  // transmit buffer byte counter
 
 // ---------- io controller signals resync -----------
@@ -108,24 +108,24 @@ reg [10:0] tx_r_cnt;                  // transmit buffer byte counter
 wire rd_en = ~rd & rd_d;
 wire wr_en = ~wr & wr_d;
 
-`SHIFT_REG(tx_begin_sr, 3, tx_begin)
+`SHIFT_REG(tx_begin_sr, 4, tx_begin)
 `SHIFT_REG(tx_strobe_sr, 3, tx_strobe)
 
-wire tx_start =  tx_begin_sr[1] & ~tx_begin_sr[2];
-wire tx_stop  = ~tx_begin_sr[1] &  tx_begin_sr[2];
+wire tx_start =  tx_begin_sr[0] & ~tx_begin_sr[1];
+wire tx_stop  = ~tx_begin_sr[2] &  tx_begin_sr[3];
 wire tx_strobe_pe = tx_strobe_sr[1] & ~tx_strobe_sr[2];
 
-`SHIFT_REG(rx_begin_sr, 3, rx_begin)
+`SHIFT_REG(rx_begin_sr, 4, rx_begin)
 `SHIFT_REG(rx_strobe_sr, 3, rx_strobe)
 
-wire rx_start =  rx_begin_sr[1] & ~rx_begin_sr[2];
-wire rx_stop  = ~rx_begin_sr[1] &  rx_begin_sr[2];
+wire rx_start =  rx_begin_sr[0] & ~rx_begin_sr[1];
+wire rx_stop  = ~rx_begin_sr[2] &  rx_begin_sr[3];
 wire rx_strobe_pe = rx_strobe_sr[1] & ~rx_strobe_sr[2];
 
-`SHIFT_REG(mac_begin_sr, 3, mac_begin)
+`SHIFT_REG(mac_begin_sr, 2, mac_begin)
 `SHIFT_REG(mac_strobe_sr, 3, mac_strobe)
 
-wire mac_start = mac_begin_sr[1] & ~mac_begin_sr[2];
+wire mac_start = mac_begin_sr[0] & ~mac_begin_sr[1];
 wire mac_strobe_pe = mac_strobe_sr[1] & ~mac_strobe_sr[2];
 
 `DELAY_REG(rx_stop_d, rx_stop)
@@ -135,6 +135,10 @@ wire dma_wr_en = wr_en & dma_port;
 
 `DELAY_REG(dma_rd_d, dma_rd_en)
 `DELAY_REG(dma_wr_d, dma_wr_en)
+
+`DELAY_REG(txp_d, txp)
+
+wire txp_pe = txp & ~txp_d;
 
 // -------------------- reset -----------------------
 reg  reset = 1'b1;
@@ -230,10 +234,10 @@ reg [7:0] dma_do;
 reg [7:0] dma_do_d;
 reg [7:0] rx_buffer_do;
 reg [7:0] tx_buffer_do;
-reg [7:0] prev; // frame start page
+reg [7:0] pprev; // frame start page
 
 wire is_mac   = (rsar[15:8] == 8'h0);
-wire is_frame = (rsar[15:8] == prev);
+wire is_frame = (rsar[15:8] == pprev);
 
 // 1 cycle delay to align access time with bram
 always @(posedge clk) begin
@@ -277,61 +281,63 @@ always @(*) begin
 end
 
 // cpu read
-always @(posedge clk) begin
+always @(*) begin
 	if (rd) begin
 		if (dma_port) begin
-			dout <= dma_do;
+			dout = dma_do;
 		end else begin
 			// registers
 			case (ps)
 				2'b00: begin
 					// page 0
 					case (addr)
-						5'h00: dout <= cr;
-						5'h03: dout <= bnry;
-						5'h04: dout <= 8'h23; // tsr: tx ok
-						5'h07: dout <= isr;
-						5'h08: dout <= crda[7:0];
-						5'h09: dout <= (rsar[15:8] + { 5'h00, crda[10:8] });
-						5'h0a: dout <= rbcr[7:0];
-						5'h0b: dout <= rbcr[15:8];
-						5'h0c: dout <= 8'h01; // rsr: rx ok
-						5'h0e: dout <= 8'h48; // dcfg: 8-bit, fifo=4
-						default: dout <= 8'h00;
+						5'h00: dout = cr;
+						5'h03: dout = bnry;
+						5'h04: dout = 8'h23; // tsr: tx ok
+						5'h07: dout = isr;
+						5'h08: dout = crda[7:0];
+						5'h09: dout = (rsar[15:8] + { 5'h00, crda[10:8] });
+						5'h0a: dout = rbcr[7:0];
+						5'h0b: dout = rbcr[15:8];
+						5'h0c: dout = 8'h01; // rsr: rx ok
+						5'h0e: dout = 8'h48; // dcfg: 8-bit, fifo=4
+						default: dout = 8'h00;
 					endcase
 				end
 				2'b01: begin
 					// page 1
 					case (addr)
-						5'h00: dout <= cr;
-						5'h01: dout <= mac[0];
-						5'h02: dout <= mac[1];
-						5'h03: dout <= mac[2];
-						5'h04: dout <= mac[3];
-						5'h05: dout <= mac[4];
-						5'h06: dout <= mac[5];
-						5'h07: dout <= curr;
-						default: dout <= 8'h00;
+						5'h00: dout = cr;
+						5'h01: dout = mac[0];
+						5'h02: dout = mac[1];
+						5'h03: dout = mac[2];
+						5'h04: dout = mac[3];
+						5'h05: dout = mac[4];
+						5'h06: dout = mac[5];
+						5'h07: dout = curr;
+						default: dout = 8'h00;
 					endcase
 				end
 				2'b10: begin
 					// page 2
 					case (addr)
-						5'h00: dout <= cr;
-						default: dout <= 8'h00;
+						5'h00: dout = cr;
+						default: dout = 8'h00;
 					endcase
 				end
 				2'b11: begin
 					// page 3
 					case (addr)
-						5'h00: dout <= cr;
-						5'h01: dout <= { ee_cr[7:1], eeprom_do };
-						5'h03: dout <= 8'h18; // config0: rtl8019as, PnP
-						default: dout <= 8'h00;
+						5'h00: dout = cr;
+						5'h01: dout = { ee_cr[7:1], eeprom_do };
+						5'h03: dout = 8'h18; // config0: rtl8019as, PnP
+						default: dout = 8'h00;
 					endcase
 				end
 			endcase
 		end
+	end else begin
+		dout = 8'h00;
 	end
 end
 
@@ -345,13 +351,15 @@ always @(posedge clk) begin
 		// reserve page for virtual header
 		rx_w_cnt <= 11'd4;
 		clda <= next_curr;
-	end else if (rx_strobe_pe) begin
+	end
+	if (rx_strobe_pe) begin
 		rx_w_cnt <= next_rx_w_cnt;
 		// count full pages
 		if (next_rx_w_cnt[7:0] == 8'h00) begin
 			clda <= next_clda;
 		end
-	end else if (rx_stop) begin
+	end
+	if (rx_stop) begin
 		// page almost full, it means CRC tail will spill over next page
 		if (&rx_w_cnt[7:2] && (rx_w_cnt[1:0] != 2'b00)) begin
 			clda <= next_clda;
@@ -370,10 +378,10 @@ end
 
 // local DMA data counter
 always @(posedge clk) begin
-	if (tx_start) begin
-		tx_r_cnt <= 11'd1;
-		tx_byte  <= tx_buffer[0];
-	end else if (tx_strobe_pe) begin
+	if (txp_pe) begin
+		tx_r_cnt <= 11'd0;
+	end
+	if (tx_strobe_pe) begin
 		tx_r_cnt <= tx_r_cnt + 11'd1;
 		tx_byte  <= tx_buffer_do;
 	end
@@ -385,7 +393,7 @@ always @(posedge clk) begin
 		tx_buffer[crda] <= din;
 	end
 	// local/remote DMA data reader
-	tx_buffer_do <= tx_buffer[tx_begin ? tx_r_cnt : crda];
+	tx_buffer_do <= tx_buffer[txp ? tx_r_cnt : crda];
 end
 
 // cpu write via read
@@ -403,7 +411,7 @@ always @(posedge clk) begin
 		rbcr   <= 16'h7050;
 		// internals
 		rx_busy <= 1'b0;
-		prev   <= 8'h80;
+		pprev   <= 8'h80;
 	end else begin
 
 		if (wr_en && !dma_port) begin
@@ -431,7 +439,7 @@ always @(posedge clk) begin
 				// register page 1
 				if (addr == 7) begin
 					curr <= din;
-					prev <= din;
+					pprev <= din;
 				end
 			end
 
@@ -442,12 +450,12 @@ always @(posedge clk) begin
 
 				if (din[5]) begin
 					// remote dma abort/complete
-					isr[6] <= 1'b1; // RDC
 					rbcr <= 16'd0;
 
 				end else if (din[3] || din[4]) begin
 					// remote dma read or write
 					crda <= { 3'h00, rsar[7:0] };
+
 					if (rbcr == 16'd0) begin
 						// with zero lenght
 						isr[6] <= 1'b1; // RDC
@@ -478,7 +486,7 @@ always @(posedge clk) begin
 		// incoming frame received
 		if (rx_stop) begin
 			rx_busy <= 1'b1;
-			prev <= curr;
+			pprev <= curr;
 		end else if (rx_stop_d) begin
 			isr[0] <= 1'b1; // PRX
 			curr <= clda;
