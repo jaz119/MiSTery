@@ -1084,6 +1084,7 @@ wire  [7:0] eth_data_out;
 
 ethernec ethernec (
 	.clk        (clk_32      ),
+	.rst        (peripheral_reset),
 	.rd         (eth_rd      ),
 	.wr         (eth_wr      ),
 	.addr       (mbus_a[13:9]),
