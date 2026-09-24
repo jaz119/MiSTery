@@ -87,15 +87,10 @@ wire stop  = cr[0];        // stop mode
 wire start = cr[1];        // nic started
 wire txp   = cr[2];        // transmit packet toggle
 wire [1:0] ps = cr[7:6];   // register page select
-
 reg rx_busy;               // previous frame is locked in buffer
-reg dma_port;              // remote DMA ports ($10 - $17)
-reg rst_port;              // reset ports ($18 - $1F)
 
-always @(posedge clk) begin
-    dma_port <= (addr[4:3] == 2'b10);
-    rst_port <= (addr[4:3] == 2'b11);
-end
+wire dma_port = (addr[4:3] == 2'b10); // remote DMA ports ($10 - $17)
+wire rst_port = (addr[4:3] == 2'b11); // reset ports ($18 - $1F)
 
 // ----------------- rx/tx buffers ------------------
 localparam BUF_SIZE = 2048;
@@ -134,13 +129,6 @@ wire mac_start = mac_begin_sr[0] & ~mac_begin_sr[1];
 wire mac_strobe_pe = mac_strobe_sr[1] & ~mac_strobe_sr[2];
 
 `DELAY_REG(rx_stop_d, rx_stop)
-
-wire dma_rd_ne = rd_ne & dma_port;
-wire dma_wr_ne = wr_ne & dma_port;
-
-`DELAY_REG(dma_rd_d, dma_rd_ne)
-`DELAY_REG(dma_wr_d, dma_wr_ne)
-
 `DELAY_REG(txp_d, txp)
 
 wire txp_pe = txp & ~txp_d;
@@ -415,10 +403,10 @@ always @(posedge clk) begin
 		isr  <= 8'h80; // RST
 		imr  <= 8'h00;
  		// ident of netusbee
-		rbcr   <= 16'h7050;
+		rbcr <= 16'h7050;
 		// internals
 		rx_busy <= 1'b0;
-		prev   <= 8'h80;
+		prev[7] <= 1'b1;
 	end else begin
 
 		if (wr_ne) begin
@@ -442,13 +430,14 @@ always @(posedge clk) begin
 						5'h0f: imr <= din;
 						default: ;
 					endcase
+				end
 
 				// register page 1
-				end else if (ps == 1) begin
-					if (addr == 7) begin
-						curr <= din;
-						prev <= din;
-					end
+				else if (ps == 1) begin
+					case (addr)
+						5'h07: curr <= din;
+						default: ;
+					endcase
 				end
 
 				// cr is available on all pages
@@ -466,21 +455,25 @@ always @(posedge clk) begin
 						// remote dma read or write
 						crda <= { 3'h00, rsar[7:0] };
 						if (rbcr_is_0) begin
-							// with zero lenght
 							isr[6] <= 1'b1; // RDC
 						end
 					end
 				end
-			end
-		end
 
-		// remote dma register (0x10 - 0x17)
-		if (dma_rd_d || dma_wr_d) begin
-			crda <= crda + 11'd1;
-
-			if (~rbcr_is_0) begin
+			end else if (!rbcr_is_0) begin
+				// remote dma write
+				crda <= crda + 11'd1;
 				rbcr <= rbcr - 16'd1;
+				if (rbcr_is_1) begin
+					isr[6] <= 1'b1; // RDC
+				end
+			end
 
+		end else if (rd_ne) begin
+			if (dma_port && !rbcr_is_0) begin
+				// remote dma read
+				crda <= crda + 11'd1;
+				rbcr <= rbcr - 16'd1;
 				if (rbcr_is_1) begin
 					isr[6] <= 1'b1; // RDC
 				end
