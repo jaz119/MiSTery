@@ -166,7 +166,7 @@ always @(posedge clk) begin
 	end
 end
 
-// ------ netusbee: 93c46 eeprom mac-read stub ------
+// ------------ 93c46 eeprom mac-read stub -----------
 reg [7:0]  ee_cr;
 reg [3:0]  ee_bit_cnt;
 reg [15:0] ee_shifter;
@@ -263,17 +263,12 @@ always @(*) begin
 	if (is_prom) begin
 		// prom data
 		dma_do = dma_do_d;
-	end else if (is_frame) begin
-		if (crda < 4) begin
-			// virtual frame header
-			dma_do = dma_do_d;
-		end else begin
-			// frame data
-			dma_do = rx_buffer_do;
-		end
+	end else if (is_frame && (crda < 4)) begin
+		// frame header
+		dma_do = dma_do_d;
 	end else begin
-		// for memory test
-		dma_do = tx_buffer_do;
+		// frame data
+		dma_do = rx_buffer_do;
 	end
 end
 
@@ -300,7 +295,7 @@ always @(*) begin
 						5'h0a: dout = rbcr[7:0];
 						5'h0b: dout = rbcr[15:8];
 						5'h0c: dout = 8'h01; // rsr: rx ok
-						5'h0e: dout = 8'h28; // dcfg: 8-bit, fifo=2
+						5'h0e: dout = 8'h48; // dcr: 8-bit
 						default: dout = 8'h00;
 					endcase
 				end
@@ -390,7 +385,7 @@ always @(posedge clk) begin
 		end
 	end
 	// local/remote DMA data reader
-	tx_buffer_do <= tx_buffer[txp ? tx_r_cnt : crda];
+	tx_buffer_do <= tx_buffer[tx_r_cnt];
 end
 
 wire rbcr_is_0 = (rbcr == 16'd0);
@@ -402,7 +397,7 @@ always @(posedge clk) begin
 		cr   <= 8'h21; // ABORT, STP
 		isr  <= 8'h80; // RST
 		imr  <= 8'h00;
- 		// ident of netusbee
+ 		// ident of rtl8019as
 		rbcr <= 16'h7050;
 		// internals
 		rx_busy <= 1'b0;
