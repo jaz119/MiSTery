@@ -63,11 +63,11 @@ module ethernec (
 	output           int_n       // nic interrupt
 );
 
-// ready to receive next frame
+wire tx_ready = (start & ~stop & txp);
 wire rx_ready = (start & ~stop & ~rx_busy);
 
 // tx_ready[17], rx_ready[16], tx_count[15:0]
-assign status = { 8'h00, 6'h00, txp, rx_ready, 5'h00, tbcr };
+assign status = { 8'h00, 6'h00, tx_ready, rx_ready, 5'h00, tbcr };
 
 // ---------- ne2000 internal registers -------------
 reg [7:0]  cr;             // command register
@@ -87,8 +87,8 @@ wire stop  = cr[0];        // stop mode
 wire start = cr[1];        // nic started
 wire txp   = cr[2];        // transmit packet toggle
 wire [1:0] ps = cr[7:6];   // register page select
-reg rx_busy;               // previous frame is locked in buffer
 
+reg rx_busy;               // previous frame is locked in buffer
 reg dma_port;              // remote DMA ports ($10 - $17)
 reg rst_port;              // reset ports ($18 - $1F)
 
@@ -152,6 +152,7 @@ reg reset_d = 1'b0;
 wire reset_pe = rst | (reset & ~reset_d);
 
 always @(posedge clk) begin
+	reset_d <= reset;
 	if (rst) begin
 		reset <= 1'b0;
 	end else if (rd_ne) begin
@@ -257,6 +258,7 @@ always @(posedge clk) begin
 			4'h5: dma_do_d <= mac[5];
 			4'hE: dma_do_d <= 8'h57;
 			4'hF: dma_do_d <= 8'h57;
+			default: dma_do_d <= 8'h00;
 		endcase
 	end else begin
 		case (crda[1:0])
@@ -408,7 +410,7 @@ wire rbcr_is_1 = (rbcr == 16'd1);
 
 // cpu write via read
 always @(posedge clk) begin
-	if (reset) begin
+	if (reset_pe || reset) begin
 		cr   <= 8'h21; // ABORT, STP
 		isr  <= 8'h80; // RST
 		imr  <= 8'h00;
@@ -421,11 +423,11 @@ always @(posedge clk) begin
 
 		if (wr_ne) begin
 			if (!dma_port) begin
+				// register page 0
 				if (ps == 0) begin
-					// register page 0
 					case (addr)
 						5'h01: pstart <= din;
-						5'h02: pstop  <= din;
+						5'h02: pstop <= din;
 						5'h03: begin
 							bnry <= din;
 							rx_busy <= 1'b0;
@@ -441,8 +443,8 @@ always @(posedge clk) begin
 						default: ;
 					endcase
 
+				// register page 1
 				end else if (ps == 1) begin
-					// register page 1
 					if (addr == 7) begin
 						curr <= din;
 						prev <= din;
@@ -458,8 +460,8 @@ always @(posedge clk) begin
 					if (din[5:3] == 3'b100) begin
 						// remote dma abort/complete
 						isr[6] <= 1'b1; // RDC
-						rbcr <= 16'd0;
 						crda <= 11'd0;
+						rbcr <= 16'd0;
 					end else if (din[3] || din[4]) begin
 						// remote dma read or write
 						crda <= { 3'h00, rsar[7:0] };
@@ -473,7 +475,7 @@ always @(posedge clk) begin
 		end
 
 		// remote dma register (0x10 - 0x17)
-		else if (dma_rd_d || dma_wr_d) begin
+		if (dma_rd_d || dma_wr_d) begin
 			crda <= crda + 11'd1;
 
 			if (~rbcr_is_0) begin
