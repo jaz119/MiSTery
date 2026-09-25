@@ -63,8 +63,8 @@ module ethernec (
 	output           int_n       // nic interrupt
 );
 
-wire tx_ready = (start & ~stop & txp);
-wire rx_ready = (start & ~stop & ~rx_busy);
+wire tx_ready = (~stop & txp);
+wire rx_ready = (~stop & ~rx_busy);
 
 // tx_ready[17], rx_ready[16], tx_count[15:0]
 assign status = { 8'h00, 6'h00, tx_ready, rx_ready, 5'h00, tbcr };
@@ -79,13 +79,12 @@ reg [10:0] crda;           // current remote dma address register
 reg [7:0]  bnry;           // boundary page
 reg [7:0]  pstart;         // rx buffer ring start page
 reg [7:0]  pstop;          // rx buffer ring stop page
-reg [15:0] rbcr;           // receiver byte count register
-reg [15:0] rsar;           // receiver address register
+reg [15:0] rbcr;           // remote byte count register
+reg [15:0] rsar;           // remote start address register
 reg [10:0] tbcr;           // transmitter byte count register
 
-wire stop  = cr[0];        // stop mode
-wire start = cr[1];        // nic started
-wire txp   = cr[2];        // transmit packet toggle
+wire stop = cr[0];         // stop mode
+wire txp  = cr[2];         // transmit packet toggle
 wire [1:0] ps = cr[7:6];   // register page select
 reg rx_busy;               // previous frame is locked in buffer
 
@@ -285,8 +284,6 @@ always @(*) begin
 					// page 0
 					case (addr)
 						5'h00: dout = cr;
-						5'h01: dout = rx_w_cnt[7:0];
-						5'h02: dout = clda;
 						5'h03: dout = bnry;
 						5'h04: dout = 8'h01; // tsr: tx ok
 						5'h07: dout = isr;
@@ -324,8 +321,7 @@ always @(*) begin
 					// page 3
 					case (addr)
 						5'h00: dout = cr;
-						5'h01: dout = { ee_cr[7:1], eeprom_do };
-						5'h03: dout = 8'h18; // config0: rtl8019as, PnP
+						5'h01: dout = { ee_cr[7:1], eeprom_do }; // 9346cr
 						default: dout = 8'h00;
 					endcase
 				end
@@ -334,9 +330,8 @@ always @(*) begin
 	end
 end
 
-wire [10:0] next_rx_w_cnt = rx_w_cnt + 11'd1;
-wire  [7:0] next_curr = ((curr + 8'd1) == pstop) ? pstart : (curr + 8'd1);
-wire  [7:0] next_clda = ((clda + 8'd1) == pstop) ? pstart : (clda + 8'd1);
+wire [7:0] next_curr = ((curr + 8'd1) == pstop) ? pstart : (curr + 8'd1);
+wire [7:0] next_clda = ((clda + 8'd1) == pstop) ? pstart : (clda + 8'd1);
 
 // local DMA bytes/pages counter
 always @(posedge clk) begin
@@ -345,9 +340,9 @@ always @(posedge clk) begin
 		rx_w_cnt <= 11'd4;
 		clda <= next_curr;
 	end else if (rx_strobe_pe) begin
-		rx_w_cnt <= next_rx_w_cnt;
+		rx_w_cnt <= rx_w_cnt + 11'd1;
 		// count full pages
-		if (next_rx_w_cnt[7:0] == 8'h00) begin
+		if (rx_w_cnt[7:0] == 8'hFF) begin
 			clda <= next_clda;
 		end
 	end else if (rx_stop) begin
@@ -418,7 +413,10 @@ always @(posedge clk) begin
 						5'h05: tbcr[7:0] <= din;
 						5'h06: tbcr[10:8] <= din[2:0];
 						5'h07: isr <= isr & ~din; // write-1-to-clear
-						5'h08: rsar[7:0] <= din;
+						5'h08: begin
+							rsar[7:0] <= din;
+							crda <= { 3'h00, din[7:0] };
+						end
 						5'h09: rsar[15:8] <= din;
 						5'h0a: rbcr[7:0] <= din;
 						5'h0b: rbcr[15:8] <= din;
@@ -441,14 +439,10 @@ always @(posedge clk) begin
 					if (din[1])
 						// start
 						isr[7] <= 1'b0; // RST
-					if (din[5:3] == 3'b100) begin
-						// remote dma abort/complete
-						isr[6] <= 1'b1; // RDC
-						crda <= 11'd0;
-						rbcr <= 16'd0;
+					if (din[5]) begin
+						// remote dma abort
 					end else if (din[3] || din[4]) begin
 						// remote dma read or write
-						crda <= { 3'h00, rsar[7:0] };
 						if (rbcr_is_0) begin
 							isr[6] <= 1'b1; // RDC
 						end
