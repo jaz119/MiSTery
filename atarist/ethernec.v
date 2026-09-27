@@ -227,7 +227,6 @@ wire eeprom_do = (ee_bit_cnt >= 10) ? ee_shifter[15] : 1'b0;
 reg [7:0] dma_do;
 reg [7:0] dma_do_d;
 reg [7:0] rx_buffer_do;
-reg [7:0] tx_buffer_do;
 reg [7:0] prev; // frame start page
 
 wire is_prom  = (rsar[15:8] == 8'h0);
@@ -333,7 +332,7 @@ end
 wire [7:0] next_curr = ((curr + 8'd1) == pstop) ? pstart : (curr + 8'd1);
 wire [7:0] next_clda = ((clda + 8'd1) == pstop) ? pstart : (clda + 8'd1);
 
-// local DMA bytes/pages counter
+// local DMA receiver
 always @(posedge clk) begin
 	if (rx_start) begin
 		// reserve page for virtual header
@@ -341,6 +340,7 @@ always @(posedge clk) begin
 		clda <= next_curr;
 	end else if (rx_strobe_pe) begin
 		rx_w_cnt <= rx_w_cnt + 11'd1;
+		rx_buffer[rx_w_cnt] <= rx_byte;
 		// count full pages
 		if (rx_w_cnt[7:0] == 8'hFF) begin
 			clda <= next_clda;
@@ -353,16 +353,9 @@ always @(posedge clk) begin
 	end
 end
 
-always @(posedge clk) begin
-	// local DMA data writer
-	if (rx_strobe_pe) begin
-		rx_buffer[rx_w_cnt] <= rx_byte;
-	end
-	// remote DMA data reader
-	rx_buffer_do <= rx_buffer[crda];
-end
+reg [7:0] tx_buffer_do;
 
-// local DMA TX counter
+// local DMA transmitter
 always @(posedge clk) begin
 	if (txp_pe) begin
 		tx_r_cnt <= 11'd0;
@@ -370,17 +363,12 @@ always @(posedge clk) begin
 		tx_r_cnt <= tx_r_cnt + 11'd1;
 		tx_byte  <= tx_buffer_do;
 	end
+	tx_buffer_do <= tx_buffer[tx_r_cnt];
 end
 
+// remote DMA data reader
 always @(posedge clk) begin
-	// remote DMA data writer
-	if (wr_ne) begin
-		if (dma_port) begin
-			tx_buffer[crda] <= din;
-		end
-	end
-	// local/remote DMA data reader
-	tx_buffer_do <= tx_buffer[tx_r_cnt];
+	rx_buffer_do <= rx_buffer[crda];
 end
 
 wire rbcr_is_0 = (rbcr == 16'd0);
@@ -427,10 +415,7 @@ always @(posedge clk) begin
 
 				// register page 1
 				else if (ps == 1) begin
-					case (addr)
-						5'h07: curr <= din;
-						default: ;
-					endcase
+					if (addr == 7) curr <= din;
 				end
 
 				// cr is available on all pages
@@ -456,6 +441,7 @@ always @(posedge clk) begin
 				if (rbcr_is_1) begin
 					isr[6] <= 1'b1; // RDC
 				end
+				tx_buffer[crda] <= din;
 			end
 
 		end else if (rd_ne) begin
@@ -469,12 +455,6 @@ always @(posedge clk) begin
 			end
 		end
 
-		// outgoing frame transmitted
-		if (tx_stop) begin
-			isr[1] <= 1'b1; // PTX
-			cr[2] <= 1'b0;  // TXP
-		end
-
 		// incoming frame received
 		if (rx_stop) begin
 			rx_busy <= 1'b1;
@@ -482,6 +462,12 @@ always @(posedge clk) begin
 		end else if (rx_stop_d) begin
 			isr[0] <= 1'b1; // PRX
 			curr <= clda;
+		end
+
+		// outgoing frame transmitted
+		else if (tx_stop) begin
+			isr[1] <= 1'b1; // PTX
+			cr[2] <= 1'b0;  // TXP
 		end
 	end
 end
