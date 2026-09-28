@@ -60,7 +60,7 @@ module ethernec (
 	input            mac_strobe, // rising edge before each mac byte
 	input      [7:0] mac_byte,   // mac address byte
 
-	output           int_n       // nic interrupt
+	output           irq         // interrupt request
 );
 
 wire tx_ready = (~stop & txp);
@@ -74,13 +74,14 @@ reg [7:0]  cr;             // command register
 reg [7:0]  isr;            // interrupt service register
 reg [7:0]  imr;            // interrupt mask register
 reg [7:0]  curr;           // current page register
-reg [7:0]  clda;           // current local dma page register
-reg [10:0] crda;           // current remote dma address register
 reg [7:0]  bnry;           // boundary page
+reg [7:0]  clda;           // current local dma page register
+reg [11:0] crda;           // current remote dma address register
 reg [7:0]  pstart;         // rx buffer ring start page
 reg [7:0]  pstop;          // rx buffer ring stop page
-reg [15:0] rbcr;           // remote byte count register
 reg [15:0] rsar;           // remote start address register
+reg [15:0] rbcr;           // remote byte count register
+reg [3:0]  tpsr;           // transmit page start address
 reg [10:0] tbcr;           // transmitter byte count register
 
 wire stop = cr[0];         // stop mode
@@ -92,13 +93,11 @@ wire dma_port = (addr[4:3] == 2'b10); // remote DMA ports ($10 - $17)
 wire rst_port = (addr[4:3] == 2'b11); // reset ports ($18 - $1F)
 
 // ----------------- rx/tx buffers ------------------
-localparam BUF_SIZE = 2048;
+reg  [7:0] rx_buffer[2047:0];   // 1 ethernet frame 4 bytes offset
+reg [10:0] rx_w_cnt;            // receive buffer byte counter
 
-reg  [7:0] rx_buffer[BUF_SIZE-1:0];   // 1 ethernet frame 4 bytes offset
-reg [10:0] rx_w_cnt;                  // receive buffer byte counter
-
-reg  [7:0] tx_buffer[BUF_SIZE-1:0];   // 1 ethernet frame
-reg [10:0] tx_r_cnt;                  // transmit buffer byte counter
+reg  [7:0] tx_buffer[4095:0];   // 2 ethernet frame (ping-pong buffering)
+reg [11:0] tx_r_cnt;            // transmit buffer byte counter
 
 // ---------- io controller signals resync -----------
 `DELAY_REG(rd_d, rd)
@@ -287,7 +286,7 @@ always @(*) begin
 						5'h04: dout = 8'h01; // tsr: tx ok
 						5'h07: dout = isr;
 						5'h08: dout = crda[7:0];
-						5'h09: dout = (rsar[15:8] + { 5'h00, crda[10:8] });
+						5'h09: dout = (rsar[15:8] + { 4'h00, crda[11:8] });
 						5'h0a: dout = rbcr[7:0];
 						5'h0b: dout = rbcr[15:8];
 						5'h0c: dout = 8'h01; // rsr: rx ok
@@ -358,9 +357,9 @@ reg [7:0] tx_buffer_do;
 // local DMA transmitter
 always @(posedge clk) begin
 	if (txp_pe) begin
-		tx_r_cnt <= 11'd0;
+		tx_r_cnt <= { tpsr, 8'h00 };
 	end else if (tx_strobe_pe) begin
-		tx_r_cnt <= tx_r_cnt + 11'd1;
+		tx_r_cnt <= tx_r_cnt + 12'd1;
 		tx_byte  <= tx_buffer_do;
 	end
 	tx_buffer_do <= tx_buffer[tx_r_cnt];
@@ -368,7 +367,7 @@ end
 
 // remote DMA data reader
 always @(posedge clk) begin
-	rx_buffer_do <= rx_buffer[crda];
+	rx_buffer_do <= rx_buffer[crda[10:0]];
 end
 
 wire rbcr_is_0 = (rbcr == 16'd0);
@@ -398,13 +397,11 @@ always @(posedge clk) begin
 							bnry <= din;
 							rx_busy <= 1'b0;
 						end
+						5'h04: tpsr <= din[3:0];
 						5'h05: tbcr[7:0] <= din;
 						5'h06: tbcr[10:8] <= din[2:0];
 						5'h07: isr <= isr & ~din; // write-1-to-clear
-						5'h08: begin
-							rsar[7:0] <= din;
-							crda <= { 3'h00, din[7:0] };
-						end
+						5'h08: rsar[7:0] <= din;
 						5'h09: rsar[15:8] <= din;
 						5'h0a: rbcr[7:0] <= din;
 						5'h0b: rbcr[15:8] <= din;
@@ -424,10 +421,14 @@ always @(posedge clk) begin
 					if (din[1])
 						// start
 						isr[7] <= 1'b0; // RST
-					if (din[5]) begin
-						// remote dma abort
-					end else if (din[3] || din[4]) begin
-						// remote dma read or write
+					if (!din[5]) begin
+						if (din[3]) begin
+							// remote dma read
+							crda <= { 3'h00, rsar[7:0] };
+						end else if (din[4]) begin
+							// remote dma write
+							crda <= rsar[11:0];
+						end
 						if (rbcr_is_0) begin
 							isr[6] <= 1'b1; // RDC
 						end
@@ -436,7 +437,7 @@ always @(posedge clk) begin
 
 			end else if (!rbcr_is_0) begin
 				// remote dma write
-				crda <= crda + 11'd1;
+				crda <= crda + 12'd1;
 				rbcr <= rbcr - 16'd1;
 				if (rbcr_is_1) begin
 					isr[6] <= 1'b1; // RDC
@@ -447,7 +448,7 @@ always @(posedge clk) begin
 		end else if (rd_ne) begin
 			if (dma_port && !rbcr_is_0) begin
 				// remote dma read
-				crda <= crda + 11'd1;
+				crda <= crda + 12'd1;
 				rbcr <= rbcr - 16'd1;
 				if (rbcr_is_1) begin
 					isr[6] <= 1'b1; // RDC
@@ -472,6 +473,6 @@ always @(posedge clk) begin
 	end
 end
 
-assign int_n = ~(|(isr & imr) & ~reset);
+assign irq = (|(isr & imr) & ~reset);
 
 endmodule
