@@ -88,8 +88,8 @@ wire dma_port = (addr[4:3] == 2'b10); // remote DMA ports ($10 - $17)
 wire rst_port = (addr[4:3] == 2'b11); // reset ports ($18 - $1F)
 
 // rx/tx buffers
-reg [7:0] rx_buffer[4095:0]; // 2-4 ethernet frames
-reg [7:0] tx_buffer[4095:0]; // 2 ethernet frames (ping-pong)
+(* ramstyle = "no_rw_check" *) reg [7:0] rx_buffer[4095:0]; // 2-4 ethernet frames
+(* ramstyle = "no_rw_check" *) reg [7:0] tx_buffer[4095:0]; // 2 ethernet frames (ping-pong)
 
 // i/o controller signals resync
 `DELAY_REG(rd_d, rd)
@@ -139,9 +139,9 @@ always @(posedge clk) begin
 	end
 end
 
-// syncing i/o controller frame traffic
-wire [3:0] free = ((bnry - pstart) - (curr - pstart));
-wire full = (free < 4'd6) && (free != 4'd0);
+// syncing i/o controller rx frame traffic
+wire [3:0] used = (curr - bnry);
+wire full = (used >= 4'd10);
 
 reg tx_ready;
 reg rx_ready;
@@ -252,7 +252,7 @@ always @(*) begin
 				5'h0a: reg_do = rbcr[7:0];
 				5'h0b: reg_do = rbcr[15:8];
 				5'h0c: reg_do = 8'h01; // rsr: rx ok
-				5'h0e: reg_do = 8'h48; // dcr: 8-bit
+				5'h0e: reg_do = 8'h48; // dcr: 8-bit mode
 				default: reg_do = 8'h00;
 			endcase
 		end
@@ -260,12 +260,6 @@ always @(*) begin
 			// page 1
 			case (addr)
 				5'h00: reg_do = cr;
-				5'h01: reg_do = mac[0];
-				5'h02: reg_do = mac[1];
-				5'h03: reg_do = mac[2];
-				5'h04: reg_do = mac[3];
-				5'h05: reg_do = mac[4];
-				5'h06: reg_do = mac[5];
 				5'h07: reg_do = curr;
 				default: reg_do = 8'h00;
 			endcase
@@ -315,8 +309,7 @@ reg [10:0] rx_length;
 
 // local DMA frame receiver
 always @(posedge clk) begin
-	if (reset_pe || reset) begin
-		// stop if reset
+	if (reset_pe) begin
 		rx_fin <= 1'b0;
 		rx_fin_d <= 1'b0;
 	end else begin
