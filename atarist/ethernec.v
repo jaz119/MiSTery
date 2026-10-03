@@ -102,40 +102,48 @@ wire txp_pe = txp & ~txp_d;
 reg [3:0] tx_begin_sr;
 reg [2:0] tx_strobe_sr;
 
-reg [3:0] rx_begin_sr;
-reg [2:0] rx_strobe_sr;
-
-reg [1:0] mac_begin_sr;
-reg [2:0] mac_strobe_sr;
-
 always @(posedge clk) begin
 	if (reset_pe) begin
-		tx_begin_sr   <= 4'd0;
-		tx_strobe_sr  <= 3'd0;
-
-		rx_begin_sr   <= 4'd0;
-		rx_strobe_sr  <= 3'd0;
-
-		mac_begin_sr  <= 2'd0;
-		mac_strobe_sr <= 3'd0;
+		tx_begin_sr  <= 4'd0;
+		tx_strobe_sr <= 3'd0;
 	end else begin
 		tx_begin_sr  <= { tx_begin_sr[2:0],  tx_begin  };
 		tx_strobe_sr <= { tx_strobe_sr[1:0], tx_strobe };
-
-		rx_begin_sr  <= { rx_begin_sr[2:0],  rx_begin  };
-		rx_strobe_sr <= { rx_strobe_sr[1:0], rx_strobe };
-
-		mac_begin_sr  <= { mac_begin_sr[0],  mac_begin  };
-		mac_strobe_sr <= { mac_strobe_sr[0], mac_strobe };
 	end
 end
 
 wire tx_done = ~tx_begin_sr[2] & tx_begin_sr[3];
 wire tx_strobe_pe = tx_strobe_sr[1] & ~tx_strobe_sr[2];
 
+reg [3:0] rx_begin_sr;
+reg [2:0] rx_strobe_sr;
+
+always @(posedge clk) begin
+	if (reset_pe) begin
+		rx_begin_sr  <= 4'd0;
+		rx_strobe_sr <= 3'd0;
+	end else begin
+		rx_begin_sr  <= { rx_begin_sr[2:0],  rx_begin  };
+		rx_strobe_sr <= { rx_strobe_sr[1:0], rx_strobe };
+	end
+end
+
 wire rx_start =  rx_begin_sr[0] & ~rx_begin_sr[1];
 wire rx_stop  = ~rx_begin_sr[2] &  rx_begin_sr[3];
 wire rx_strobe_pe = rx_strobe_sr[1] & ~rx_strobe_sr[2];
+
+reg [1:0] mac_begin_sr;
+reg [2:0] mac_strobe_sr;
+
+always @(posedge clk) begin
+	if (reset_pe) begin
+		mac_begin_sr  <= 2'd0;
+		mac_strobe_sr <= 3'd0;
+	end else begin
+		mac_begin_sr  <= { mac_begin_sr[0],  mac_begin  };
+		mac_strobe_sr <= { mac_strobe_sr[0], mac_strobe };
+	end
+end
 
 wire mac_start = mac_begin_sr[0] & ~mac_begin_sr[1];
 wire mac_strobe_pe = mac_strobe_sr[1] & ~mac_strobe_sr[2];
@@ -301,7 +309,7 @@ always @(*) begin
 	endcase
 end
 
-wire is_prom = (rsar[15:8] == 8'h0);
+wire is_prom = (rsar[15:8] == 8'h00);
 
 // CPU read
 always @(*) begin
