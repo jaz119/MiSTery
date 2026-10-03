@@ -20,18 +20,6 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 
-`define SHIFT_REG(reg_name, depth, in_signal) \
-	reg [depth-1:0] reg_name = { depth{1'b0} }; \
-	always @(posedge clk) begin \
-		reg_name <= { reg_name[depth-2:0], in_signal }; \
-	end
-
-`define DELAY_REG(reg_name, in_signal) \
-	reg reg_name = 1'b0; \
-	always @(posedge clk) begin \
-		reg_name <= in_signal; \
-	end
-
 module ethernec (
 	// CPU interface
 	input            clk,
@@ -88,39 +76,69 @@ wire dma_port = (addr[4:3] == 2'b10); // remote DMA ports ($10 - $17)
 wire rst_port = (addr[4:3] == 2'b11); // reset ports ($18 - $1F)
 
 // rx/tx buffers
-(* ramstyle = "no_rw_check" *) reg [7:0] rx_buffer[4095:0]; // 2-4 ethernet frames
-(* ramstyle = "no_rw_check" *) reg [7:0] tx_buffer[4095:0]; // 2 ethernet frames (ping-pong)
+reg [7:0] rx_buffer[4095:0]; // 2-4 ethernet frames
+reg [7:0] tx_buffer[4095:0]; // 2 ethernet frames (ping-pong)
 
 // i/o controller signals resync
-`DELAY_REG(rd_d, rd)
-`DELAY_REG(wr_d, wr)
+reg rd_d, wr_d;
+reg txp_d;
 
-wire rd_ne = ~rd & rd_d; // 0xFBxxxx
-wire wr_ne = ~wr & wr_d; // 0xFAxxxx
+always @(posedge clk) begin
+	if (reset_pe) begin
+		rd_d <= 1'b0;
+		wr_d <= 1'b0;
+		txp_d <= 1'b0;
+	end else begin
+		rd_d <= rd;
+		wr_d <= wr;
+		txp_d <= txp;
+	end
+end
 
-`SHIFT_REG(tx_begin_sr, 4, tx_begin)
-`SHIFT_REG(tx_strobe_sr, 3, tx_strobe)
+wire rd_ne = ~rd & rd_d;
+wire wr_ne = ~wr & wr_d;
+wire txp_pe = txp & ~txp_d;
 
-wire tx_start =  tx_begin_sr[0] & ~tx_begin_sr[1];
-wire tx_stop  = ~tx_begin_sr[2] &  tx_begin_sr[3];
+reg [3:0] tx_begin_sr;
+reg [2:0] tx_strobe_sr;
+
+reg [3:0] rx_begin_sr;
+reg [2:0] rx_strobe_sr;
+
+reg [1:0] mac_begin_sr;
+reg [2:0] mac_strobe_sr;
+
+always @(posedge clk) begin
+	if (reset_pe) begin
+		tx_begin_sr   <= 4'd0;
+		tx_strobe_sr  <= 3'd0;
+
+		rx_begin_sr   <= 4'd0;
+		rx_strobe_sr  <= 3'd0;
+
+		mac_begin_sr  <= 2'd0;
+		mac_strobe_sr <= 3'd0;
+	end else begin
+		tx_begin_sr  <= { tx_begin_sr[2:0],  tx_begin  };
+		tx_strobe_sr <= { tx_strobe_sr[1:0], tx_strobe };
+
+		rx_begin_sr  <= { rx_begin_sr[2:0],  rx_begin  };
+		rx_strobe_sr <= { rx_strobe_sr[1:0], rx_strobe };
+
+		mac_begin_sr  <= { mac_begin_sr[0],  mac_begin  };
+		mac_strobe_sr <= { mac_strobe_sr[0], mac_strobe };
+	end
+end
+
+wire tx_done = ~tx_begin_sr[2] & tx_begin_sr[3];
 wire tx_strobe_pe = tx_strobe_sr[1] & ~tx_strobe_sr[2];
-
-`SHIFT_REG(rx_begin_sr, 4, rx_begin)
-`SHIFT_REG(rx_strobe_sr, 3, rx_strobe)
 
 wire rx_start =  rx_begin_sr[0] & ~rx_begin_sr[1];
 wire rx_stop  = ~rx_begin_sr[2] &  rx_begin_sr[3];
 wire rx_strobe_pe = rx_strobe_sr[1] & ~rx_strobe_sr[2];
 
-`SHIFT_REG(mac_begin_sr, 2, mac_begin)
-`SHIFT_REG(mac_strobe_sr, 3, mac_strobe)
-
 wire mac_start = mac_begin_sr[0] & ~mac_begin_sr[1];
 wire mac_strobe_pe = mac_strobe_sr[1] & ~mac_strobe_sr[2];
-
-`DELAY_REG(txp_d, txp)
-
-wire txp_pe = txp & ~txp_d;
 
 // reset
 reg reset = 1'b0;
@@ -221,6 +239,7 @@ wire eeprom_do = (ee_bit_cnt >= 10) ? ee_shifter[15] : 1'b0;
 
 reg [7:0] rom_do;
 reg [7:0] reg_do;
+reg [7:0] rx_buffer_do;
 
 // PROM read
 always @(*) begin
@@ -354,16 +373,14 @@ reg  [7:0] tx_buffer_do;
 
 // local DMA frame transmitter
 always @(posedge clk) begin
+	tx_buffer_do <= tx_buffer[tx_addr];
 	if (txp_pe) begin
 		tx_addr <= { tpsr, 8'd0 };
 	end else if (tx_strobe_pe) begin
 		tx_byte <= tx_buffer_do;
 		tx_addr <= tx_addr + 12'd1;
 	end
-	tx_buffer_do <= tx_buffer[tx_addr];
 end
-
-reg [7:0] rx_buffer_do;
 
 // remote DMA data reader
 always @(posedge clk) begin
@@ -442,7 +459,7 @@ always @(posedge clk) begin
 			curr <= clda;
 		end
 		// outgoing frame transmitted
-		else if (tx_stop) begin
+		else if (tx_done) begin
 			isr[1] <= 1'b1; // PTX
 			cr[2] <= 1'b0;  // TXP
 		end
