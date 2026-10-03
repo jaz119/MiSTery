@@ -425,9 +425,11 @@ always @(posedge clk) begin
 				// CR is available on all pages
 				if (addr == 0) begin
 					cr <= din;
-					if (din[1])
+					if (din[1]) begin
 						// start
 						isr[7] <= 1'b0; // RST
+						if (bnry < pstart) bnry <= pstart;
+					end
 					if (din[5]) begin
 						// remote dma abort
 					end else if (din[3] || din[4]) begin
