@@ -58,6 +58,7 @@ assign status = { 8'h00, 6'h00, tx_ready, rx_ready, 5'h00, tbcr };
 reg [7:0]  cr;             // command register
 reg [7:0]  isr;            // interrupt service register
 reg [7:0]  imr;            // interrupt mask register
+reg [7:0]  rcr;            // receiver control register
 reg [7:0]  curr;           // current page register
 reg [7:0]  bnry;           // boundary page
 reg [7:0]  clda;           // current local dma page register
@@ -336,6 +337,7 @@ reg [10:0] rx_length;
 
 // local DMA frame receiver
 always @(posedge clk) begin
+	rx_fin_d <= rx_fin;
 	if (reset_pe) begin
 		rx_fin <= 1'b0;
 		rx_fin_d <= 1'b0;
@@ -368,12 +370,18 @@ always @(posedge clk) begin
 				2'd3: begin
 					rx_buffer[rx_addr] <= { 5'h00, rx_length[10:8] };
 					rx_fin <= 1'b0;
+					if (rcr[5]) begin
+						// skip frame if monitor mode
+						rx_fin_d <= 1'b0;
+					end else if (rx_length < 64) begin
+						// dis/allow runt frames
+						rx_fin_d <= rcr[1];
+					end
 				end
 			endcase
 			rx_addr <= rx_addr + 12'd1;
 		end
 	end
-	rx_fin_d <= rx_fin;
 end
 
 reg [11:0] tx_addr;
@@ -422,6 +430,7 @@ always @(posedge clk) begin
 						5'h09: rsar[15:8] <= din;
 						5'h0a: rbcr[7:0] <= din;
 						5'h0b: rbcr[15:8] <= din;
+						5'h0c: rcr <= din;
 						5'h0f: imr <= din;
 						default: ;
 					endcase
@@ -464,12 +473,12 @@ always @(posedge clk) begin
 			end
 		end
 		// incoming frame received
-		else if (rx_done) begin
+		if (rx_done) begin
 			isr[0] <= 1'b1; // PRX
 			curr <= clda;
 		end
 		// outgoing frame transmitted
-		else if (tx_done) begin
+		if (tx_done) begin
 			isr[1] <= 1'b1; // PTX
 			cr[2] <= 1'b0;  // TXP
 		end
