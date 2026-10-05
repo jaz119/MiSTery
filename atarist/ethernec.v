@@ -80,41 +80,33 @@ wire rst_port = (addr[4:3] == 2'b11); // reset ports ($18 - $1F)
 reg [7:0] rx_buffer[4095:0]; // 2-4 ethernet frames
 reg [7:0] tx_buffer[4095:0]; // 2 ethernet frames (ping-pong)
 
-// i/o controller signals resync
+// control signals
 reg rd_d, wr_d;
-reg txp_d;
 
 always @(posedge clk) begin
 	if (reset_pe) begin
 		rd_d <= 1'b0;
 		wr_d <= 1'b0;
-		txp_d <= 1'b0;
 	end else begin
 		rd_d <= rd;
 		wr_d <= wr;
-		txp_d <= txp;
 	end
 end
 
 wire rd_ne = ~rd & rd_d;
 wire wr_ne = ~wr & wr_d;
-wire txp_pe = txp & ~txp_d;
 
-reg [3:0] tx_begin_sr;
-reg [2:0] tx_strobe_sr;
+reg mac_begin_d;
 
 always @(posedge clk) begin
 	if (reset_pe) begin
-		tx_begin_sr  <= 4'd0;
-		tx_strobe_sr <= 3'd0;
+		mac_begin_d <= 1'b0;
 	end else begin
-		tx_begin_sr  <= { tx_begin_sr[2:0],  tx_begin  };
-		tx_strobe_sr <= { tx_strobe_sr[1:0], tx_strobe };
+		mac_begin_d <= mac_begin;
 	end
 end
 
-wire tx_done = ~tx_begin_sr[2] & tx_begin_sr[3];
-wire tx_strobe_pe = tx_strobe_sr[1] & ~tx_strobe_sr[2];
+wire mac_start = mac_begin & ~mac_begin_d;
 
 reg [3:0] rx_begin_sr;
 reg [2:0] rx_strobe_sr;
@@ -133,21 +125,25 @@ wire rx_start =  rx_begin_sr[0] & ~rx_begin_sr[1];
 wire rx_stop  = ~rx_begin_sr[2] &  rx_begin_sr[3];
 wire rx_strobe_pe = rx_strobe_sr[1] & ~rx_strobe_sr[2];
 
-reg [1:0] mac_begin_sr;
-reg [2:0] mac_strobe_sr;
+reg txp_d;
+reg [3:0] tx_begin_sr;
+reg [2:0] tx_strobe_sr;
 
 always @(posedge clk) begin
 	if (reset_pe) begin
-		mac_begin_sr  <= 2'd0;
-		mac_strobe_sr <= 3'd0;
+		txp_d <= 1'b0;
+		tx_begin_sr  <= 4'd0;
+		tx_strobe_sr <= 3'd0;
 	end else begin
-		mac_begin_sr  <= { mac_begin_sr[0],  mac_begin  };
-		mac_strobe_sr <= { mac_strobe_sr[0], mac_strobe };
+		txp_d <= txp;
+		tx_begin_sr  <= { tx_begin_sr[2:0],  tx_begin  };
+		tx_strobe_sr <= { tx_strobe_sr[1:0], tx_strobe };
 	end
 end
 
-wire mac_start = mac_begin_sr[0] & ~mac_begin_sr[1];
-wire mac_strobe_pe = mac_strobe_sr[1] & ~mac_strobe_sr[2];
+wire txp_pe = txp & ~txp_d;
+wire tx_done = ~tx_begin_sr[2] & tx_begin_sr[3];
+wire tx_strobe_pe = tx_strobe_sr[1] & ~tx_strobe_sr[2];
 
 // reset
 reg reset = 1'b0;
@@ -185,7 +181,7 @@ reg [2:0] mac_cnt;
 always @(posedge clk) begin
 	if (mac_start)
 		mac_cnt <= 0;
-	else if (mac_strobe_pe) begin
+	else if (mac_strobe) begin
 		if (mac_cnt < 6) begin
 			mac[mac_cnt] <= mac_byte;
 			mac_cnt <= mac_cnt + 3'd1;

@@ -448,6 +448,7 @@ always @(posedge clk_sys) begin
 	if (spi_transfer_end) begin
 		abyte_cnt <= 8'd0;
 		eth_rx_write_begin <= 0;
+		eth_mac_begin <= 0;
 	end else if (spi_receiver_strobeD ^ spi_receiver_strobe) begin
 
 		if(~&abyte_cnt) 
@@ -577,8 +578,8 @@ always @(posedge clk_sys) begin
 		sd_buff_addr<= 0;
 	end else if (spi_receiver_strobeD ^ spi_receiver_strobe) begin
 
-		if(~&abyte_cnt) 
-			abyte_cnt <= abyte_cnt + 8'd1;
+		if(~&abyte_cnt)
+			abyte_cnt <= abyte_cnt + 5'd1;
 
 		if(abyte_cnt == 0) begin
 			acmd <= spi_byte_in;
