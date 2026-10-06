@@ -1,4 +1,4 @@
-module user_io( 
+module user_io(
 		input      clk_sys,
 		input      SPI_CLK,
 		input      SPI_SS_IO,
@@ -51,7 +51,7 @@ module user_io(
 		
 		output reg       eth_tx_read_begin,
 		output reg       eth_tx_read_strobe,
-		input [7:0] 	  eth_tx_read_byte,
+		input [7:0]      eth_tx_read_byte,
 	
 		output reg       eth_rx_write_begin,
 		output reg       eth_rx_write_strobe,
@@ -111,7 +111,7 @@ reg [7:0] 	      but_sw;
 
 // counter runs 0..7,8..15,8..15,8..15
 wire [2:0] tx_bit = ~(bit_cnt[2:0]);
-	
+
 assign BUTTONS = but_sw[1:0];
 assign SWITCHES = but_sw[3:2];
 assign scandoubler_disable = but_sw[4];
@@ -270,82 +270,83 @@ always@(posedge clk_sys) begin
 	end
 end
 
-
-
 // prepent "a5" to status to make sure io controller can detect that a core
 // doesn't support the command
 wire [63+8:0] serial_status_out_x = { 8'ha5, serial_status_out };
-
 wire drive_sel = sd_rd[1] | sd_wr[1];
 
-always@(negedge spi_sck) begin
+always @(negedge spi_sck) begin
 	reg [31:0] sd_lba_r;
 	reg  [7:0] drive_sel_r;
 	reg  [7:0] sd_cmd;
 	reg  [7:0] sd_din_r;
 
 	sd_cmd <= { 4'h6, sd_conf, sd_sdhc, sd_wr[drive_sel], sd_rd[drive_sel] };
-	if(&bit_cnt[2:0]) sd_din_r <= sd_din;
+	if (&bit_cnt[2:0]) sd_din_r <= sd_din;
 
-	if(bit_cnt <= 7)
+	if (bit_cnt <= 7)
 		SPI_MISO <= CORE_TYPE[7-bit_cnt];
 	else begin
+		case (cmd)
+			// serial mfp -> io controller
+			8'h1b: begin
+				if (!byte_cnt[0]) SPI_MISO <= serial_data_out_available;
+				else              SPI_MISO <= serial_data_out[tx_bit];
+			end
 
-			// serial mfp->io controller
-			if(cmd == 8'h1b) begin
-				if(!byte_cnt[0])
-					SPI_MISO <= serial_data_out_available;
-				else
-					SPI_MISO <= serial_data_out[tx_bit];
+			// parallel psg/ym -> io controller
+			8'h06: begin
+				if (!byte_cnt[0]) SPI_MISO <= parallel_data_out_available;
+				else              SPI_MISO <= parallel_data_out[tx_bit];
 			end
-			
-			// parallel psg/ym->io controller
-			if(cmd == 6) begin
-				if(!byte_cnt[0])
-					SPI_MISO <= parallel_data_out_available;
-				else
-					SPI_MISO <= parallel_data_out[tx_bit];
+
+			// midi -> io controller
+			8'h08: begin
+				if (!byte_cnt[0]) SPI_MISO <= midi_data_out_available;
+				else              SPI_MISO <= midi_data_out[tx_bit];
 			end
-			
-			// midi->io controller
-			if(cmd == 8) begin
-				if(!byte_cnt[0])
-					SPI_MISO <= midi_data_out_available;
-				else
-					SPI_MISO <= midi_data_out[tx_bit];
-			end
-			
+
 			// ethernet status
-			if(cmd == 8'h0a)
+			8'h0a: begin
 				SPI_MISO <= eth_status[{~byte_cnt[1:0], tx_bit}];
+			end
 
 			// read ethernet tx buffer
-			if(cmd == 8'h0b)
+			8'h0b: begin
 				SPI_MISO <= eth_tx_read_byte[tx_bit];
-				
+			end
+
 			// serial status
-			if(cmd == 8'h0d)
+			8'h0d: begin
 				SPI_MISO <= serial_status_out_x[{4'h8-byte_cnt, tx_bit}];
+			end
 
 			// reading sd card status
-			if(cmd == 8'h16) begin
-				if(byte_cnt == 0) begin
+			8'h16: begin
+				if (byte_cnt == 0) begin
 					SPI_MISO <= sd_cmd[tx_bit];
 					sd_lba_r <= sd_lba;
 					drive_sel_r <= {7'b0, drive_sel};
 				end
-				else if(byte_cnt == 1) SPI_MISO <= drive_sel_r[tx_bit];
-				else if(byte_cnt < 6) SPI_MISO <= sd_lba_r[{5-byte_cnt, tx_bit}];
+				else if (byte_cnt == 1) SPI_MISO <= drive_sel_r[tx_bit];
+				else if (byte_cnt < 6)  SPI_MISO <= sd_lba_r[{5-byte_cnt, tx_bit}];
 			end
 
 			// reading sd card write data
-			if(cmd == 8'h18) SPI_MISO <= sd_din_r[tx_bit];
-
-			if(cmd == 8'h31) begin
-				if (byte_cnt == 0) SPI_MISO <= tx_bit == 0 ? i2c_end : tx_bit == 1 ? i2c_ack : tx_bit == 2 ? hdmi_hiclk : 1'b0;
-				else SPI_MISO <= i2c_din[tx_bit];
+			8'h18: begin
+				SPI_MISO <= sd_din_r[tx_bit];
 			end
 
+			// i2c bridge
+			8'h31: begin
+				if (byte_cnt == 0) 
+					SPI_MISO <= (tx_bit == 0) ? i2c_end : (tx_bit == 1) ? i2c_ack : (tx_bit == 2) ? hdmi_hiclk : 1'b0;
+				else 
+					SPI_MISO <= i2c_din[tx_bit];
+			end
+
+			default: SPI_MISO <= 1'b1;
+		endcase
 	end
 end
 
@@ -355,8 +356,8 @@ reg       spi_receiver_strobe_r = 0;
 reg       spi_transfer_end_r = 1;
 reg [7:0] spi_byte_in;
 
-always@(posedge spi_sck, posedge SPI_SS_IO) begin
-	if(SPI_SS_IO == 1) begin
+always @(posedge spi_sck or posedge SPI_SS_IO) begin
+	if (SPI_SS_IO == 1) begin
 		bit_cnt <= 4'd0;
 		byte_cnt <= 4'd0;
 
@@ -369,51 +370,45 @@ always@(posedge spi_sck, posedge SPI_SS_IO) begin
 	end else begin
 		spi_transfer_end_r <= 0;
 
-		// finished reading a byte, prepare to transfer to clk_sys
-		if(bit_cnt == 4'd7 || bit_cnt == 4'd15) begin
-			spi_byte_in <= { sbuf, SPI_MOSI};
+		// command byte finished
+		if (bit_cnt == 7) begin
+			cmd <= { sbuf, SPI_MOSI };
+			spi_byte_in <= { sbuf, SPI_MOSI };
 			spi_receiver_strobe_r <= ~spi_receiver_strobe_r;
+
+			if ({ sbuf, SPI_MOSI } == 8'h0b) begin
+				eth_tx_read_begin <= 1'b1;
+				eth_tx_read_strobe <= 1'b0;
+			end
 		end
 
 		sbuf[6:1] <= sbuf[5:0];
 		sbuf[0] <= SPI_MOSI;
 
 		// count 0-7 8-15 8-15 8-15
-		if(bit_cnt != 4'd15)
+		if (bit_cnt != 15)
 			bit_cnt <= bit_cnt + 4'd1;
 		else begin
 			bit_cnt <= 4'd8;
 			byte_cnt <= byte_cnt + 4'd1;
 		end
 
-		// command byte finished
-		if(bit_cnt == 7) begin
-			cmd[7:1] <= sbuf; 
-			cmd[0] <= SPI_MOSI;
-
-			// just finished the mac command byte? -> set begin flag
-			if( { sbuf, SPI_MOSI} == 8'h0b ) begin
-				eth_tx_read_begin <= 1'b1;
-				eth_tx_read_strobe <= 1'b1;
-			end
-
-		end
-
-		if(bit_cnt == 9) begin
+		if (eth_tx_read_strobe && bit_cnt == 9) begin
 			eth_tx_read_strobe <= 1'b0;
 		end
 
 		// payload byte finished
-		if(bit_cnt == 15) begin
+		if (bit_cnt == 15) begin
+			spi_byte_in <= { sbuf, SPI_MOSI };
+			spi_receiver_strobe_r <= ~spi_receiver_strobe_r;
 
 			// give strobe after each eth byte read
-			if(cmd == 8'h0b)
+			if (cmd == 8'h0b)
 				eth_tx_read_strobe <= 1'b1;
 
 			// serial_status from io controller
-			if((cmd == 8'h0d) && (byte_cnt == 1))
+			if ((cmd == 8'h0d) && (byte_cnt == 1))
 				serial_status_in <= { sbuf, SPI_MOSI };
-
 		end
 	end
 end
@@ -512,8 +507,8 @@ always @(posedge clk_sys) begin
 				end
 
 				8'h1b: if (!abyte_cnt[0]) serial_strobe_out <= 1;
-				8'h06: if (!abyte_cnt[0])	parallel_strobe_out <= 1;
-				8'h08: if (!abyte_cnt[0])	midi_strobe_out <= 1;
+				8'h06: if (!abyte_cnt[0]) parallel_strobe_out <= 1;
+				8'h08: if (!abyte_cnt[0]) midi_strobe_out <= 1;
 
 				8'h15: status <= spi_byte_in;
 

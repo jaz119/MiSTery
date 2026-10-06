@@ -114,26 +114,23 @@ wire rx_start = rx_begin & ~rx_begin_d;
 wire rx_stop = ~rx_begin &  rx_begin_d;
 wire mac_start = mac_begin & ~mac_begin_d;
 
-reg txp_d;
-reg [3:0] tx_begin_sr;
-reg [2:0] tx_strobe_sr;
+reg [1:0] tx_begin_sr;
+reg [1:0] tx_strobe_sr;
 
 // they are in the SPI bus clock domain
 always @(posedge clk) begin
 	if (reset_pe) begin
-		txp_d <= 1'b0;
-		tx_begin_sr  <= 4'd0;
-		tx_strobe_sr <= 3'd0;
+		tx_begin_sr  <= 2'd0;
+		tx_strobe_sr <= 2'd0;
 	end else begin
-		txp_d <= txp;
-		tx_begin_sr  <= { tx_begin_sr[2:0],  tx_begin  };
-		tx_strobe_sr <= { tx_strobe_sr[1:0], tx_strobe };
+		tx_begin_sr  <= { tx_begin_sr[0],  tx_begin  };
+		tx_strobe_sr <= { tx_strobe_sr[0], tx_strobe };
 	end
 end
 
-wire txp_pe = txp & ~txp_d;
-wire tx_done = ~tx_begin_sr[2] & tx_begin_sr[3];
-wire tx_strobe_pe = tx_strobe_sr[1] & ~tx_strobe_sr[2];
+wire tx_start = tx_begin_sr[0] & ~tx_begin_sr[1];
+wire tx_done = ~tx_begin_sr[0] &  tx_begin_sr[1];
+wire tx_strobe_pe = tx_strobe_sr[0] & ~tx_strobe_sr[1];
 
 // reset
 reg reset = 1'b0;
@@ -236,7 +233,7 @@ reg [7:0] rom_do;
 reg [7:0] reg_do;
 reg [7:0] rx_buffer_do;
 
-// PROM read
+// PROM read (8-bit)
 always @(*) begin
 	case (rsar[3:0])
 		4'h00: rom_do = mac[0];
@@ -371,15 +368,13 @@ always @(posedge clk) begin
 end
 
 reg [11:0] tx_addr;
-reg  [7:0] tx_buffer_do;
 
 // local DMA frame transmitter
 always @(posedge clk) begin
-	tx_buffer_do <= tx_buffer[tx_addr];
-	if (txp_pe) begin
+	tx_byte <= tx_buffer[tx_addr];
+	if (tx_start) begin
 		tx_addr <= { tpsr, 8'd0 };
 	end else if (tx_strobe_pe) begin
-		tx_byte <= tx_buffer_do;
 		tx_addr <= tx_addr + 12'd1;
 	end
 end
@@ -428,11 +423,13 @@ always @(posedge clk) begin
 				// CR is available on all pages
 				if (addr == 0) begin
 					cr <= din;
-					if (din[1]) begin
-						// start
-						isr[7] <= 1'b0; // RST
-						if (bnry < pstart) bnry <= pstart;
-					end
+					if (din[0]) begin
+						// stop
+						isr[7] <= 1'b1; // RST
+					end else if (din[1]) begin
+ 						// start
+ 						isr[7] <= 1'b0; // RST
+ 					end
 					if (din[5]) begin
 						// remote dma abort
 					end else if (din[3] || din[4]) begin
