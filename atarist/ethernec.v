@@ -96,39 +96,29 @@ end
 wire rd_ne = ~rd & rd_d;
 wire wr_ne = ~wr & wr_d;
 
+reg rx_begin_d;
 reg mac_begin_d;
 
+// these are in the same clock domain
 always @(posedge clk) begin
 	if (reset_pe) begin
+		rx_begin_d  <= 1'b0;
 		mac_begin_d <= 1'b0;
 	end else begin
+		rx_begin_d  <= rx_begin;
 		mac_begin_d <= mac_begin;
 	end
 end
 
+wire rx_start = rx_begin & ~rx_begin_d;
+wire rx_stop = ~rx_begin &  rx_begin_d;
 wire mac_start = mac_begin & ~mac_begin_d;
-
-reg [3:0] rx_begin_sr;
-reg [2:0] rx_strobe_sr;
-
-always @(posedge clk) begin
-	if (reset_pe) begin
-		rx_begin_sr  <= 4'd0;
-		rx_strobe_sr <= 3'd0;
-	end else begin
-		rx_begin_sr  <= { rx_begin_sr[2:0],  rx_begin  };
-		rx_strobe_sr <= { rx_strobe_sr[1:0], rx_strobe };
-	end
-end
-
-wire rx_start =  rx_begin_sr[0] & ~rx_begin_sr[1];
-wire rx_stop  = ~rx_begin_sr[2] &  rx_begin_sr[3];
-wire rx_strobe_pe = rx_strobe_sr[1] & ~rx_strobe_sr[2];
 
 reg txp_d;
 reg [3:0] tx_begin_sr;
 reg [2:0] tx_strobe_sr;
 
+// they are in the SPI bus clock domain
 always @(posedge clk) begin
 	if (reset_pe) begin
 		txp_d <= 1'b0;
@@ -345,7 +335,7 @@ always @(posedge clk) begin
 			rx_addr <= { curr[3:0], 8'd4 };
 			// first page already used
 			clda <= next_curr;
-		end else if (rx_strobe_pe) begin
+		end else if (rx_strobe) begin
 			rx_buffer[rx_addr] <= rx_byte;
 			rx_length <= rx_length + 11'd1;
 			rx_addr <= rx_addr + 12'd1;

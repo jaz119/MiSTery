@@ -459,7 +459,7 @@ always @(posedge clk_sys) begin
 		if(abyte_cnt == 0) begin
 			acmd <= spi_byte_in;
 			if (spi_byte_in == 8'h09) eth_mac_begin <= 1;
-			if (spi_byte_in == 8'h0c)	eth_rx_write_begin <= 1;
+			if (spi_byte_in == 8'h0c) eth_rx_write_begin <= 1;
 		end else begin
 			case(acmd)
 				// buttons and switches
