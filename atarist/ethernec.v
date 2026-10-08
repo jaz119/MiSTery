@@ -60,6 +60,7 @@ reg [7:0]  isr;            // interrupt service register
 reg [7:0]  imr;            // interrupt mask register
 reg [7:0]  rcr;            // receiver control register
 reg [7:0]  tcr;            // transmitter control register
+reg [7:0]  dcr;            // data configuration register
 reg [7:0]  curr;           // current page register
 reg [7:0]  bnry;           // boundary page
 reg [7:0]  clda;           // current local dma page register
@@ -74,6 +75,7 @@ wire stop = cr[0];         // stop mode
 wire txp  = cr[2];         // transmit packet toggle
 wire [1:0] ps = cr[7:6];   // register page select
 wire [1:0] lb = tcr[2:1];  // loopback mode select
+wire wts = dcr[0];         // word transfer select
 wire mon = rcr[5];         // monitor mode
 
 wire dma_port = (addr[4:3] == 2'b10); // remote DMA ports ($10 - $17)
@@ -265,7 +267,6 @@ always @(*) begin
 				5'h0a: reg_do = rbcr[7:0];
 				5'h0b: reg_do = rbcr[15:8];
 				5'h0c: reg_do = 8'h01; // rsr: rx ok
-				5'h0e: reg_do = 8'h48; // dcr: 8-bit mode
 				default: reg_do = 8'h00;
 			endcase
 		end
@@ -420,6 +421,7 @@ always @(posedge clk) begin
 						5'h0b: rbcr[15:8] <= din;
 						5'h0c: rcr <= din;
 						5'h0d: tcr <= din;
+						5'h0e: dcr <= din;
 						5'h0f: imr <= din;
 						default: ;
 					endcase
