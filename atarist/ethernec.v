@@ -59,6 +59,7 @@ reg [7:0]  cr;             // command register
 reg [7:0]  isr;            // interrupt service register
 reg [7:0]  imr;            // interrupt mask register
 reg [7:0]  rcr;            // receiver control register
+reg [7:0]  tcr;            // transmitter control register
 reg [7:0]  curr;           // current page register
 reg [7:0]  bnry;           // boundary page
 reg [7:0]  clda;           // current local dma page register
@@ -72,6 +73,8 @@ reg [10:0] tbcr;           // transmitter byte count register
 wire stop = cr[0];         // stop mode
 wire txp  = cr[2];         // transmit packet toggle
 wire [1:0] ps = cr[7:6];   // register page select
+wire [1:0] lb = tcr[2:1];  // loopback mode select
+wire mon = rcr[5];         // monitor mode
 
 wire dma_port = (addr[4:3] == 2'b10); // remote DMA ports ($10 - $17)
 wire rst_port = (addr[4:3] == 2'b11); // reset ports ($18 - $1F)
@@ -133,9 +136,8 @@ wire tx_done = ~tx_begin_sr[0] &  tx_begin_sr[1];
 wire tx_strobe_pe = tx_strobe_sr[0] & ~tx_strobe_sr[1];
 
 // reset
-reg reset = 1'b0;
-reg reset_d = 1'b0;
-
+reg  reset = 1'b0;
+reg  reset_d = 1'b0;
 wire reset_pe = rst | (reset & ~reset_d);
 
 always @(posedge clk) begin
@@ -157,8 +159,8 @@ reg tx_ready;
 reg rx_ready;
 
 always @(posedge clk) begin
-	tx_ready <= (~stop & txp);
-	rx_ready <= (~stop & ~full);
+	tx_ready <= (~stop & ~is_loop & txp);
+	rx_ready <= (~stop & ~is_loop & ~mon & ~full);
 end
 
 // set local MAC address
@@ -293,6 +295,7 @@ always @(*) begin
 	endcase
 end
 
+wire is_loop = (lb != 2'b00);
 wire is_prom = (rsar[15:8] == 8'h00);
 
 // CPU read
@@ -300,7 +303,13 @@ always @(*) begin
 	dout = 8'h00;
 	if (rd) begin
 		if (dma_port) begin
-			dout = is_prom ? rom_do : rx_buffer_do;
+			if (is_prom) begin
+				dout = rom_do;
+			end else if (is_loop) begin
+				dout = tx_byte;
+			end else begin
+				dout = rx_buffer_do;
+			end
 		end else begin
 			dout = reg_do;
 		end
@@ -353,10 +362,7 @@ always @(posedge clk) begin
 				2'd3: begin
 					rx_buffer[rx_addr] <= { 5'h00, rx_length[10:8] };
 					rx_fin <= 1'b0;
-					if (rcr[5]) begin
-						// skip frame if monitor mode
-						rx_fin_d <= 1'b0;
-					end else if (rx_length < 64) begin
+					if (rx_length < 64) begin
 						// dis/allow runt frames
 						rx_fin_d <= rcr[1];
 					end
@@ -367,11 +373,12 @@ always @(posedge clk) begin
 	end
 end
 
-reg [11:0] tx_addr;
+reg  [11:0] tx_addr;
+wire [11:0] tx_r_addr = is_loop ? rsar[11:0] : tx_addr;
 
 // local DMA frame transmitter
 always @(posedge clk) begin
-	tx_byte <= tx_buffer[tx_addr];
+	tx_byte <= tx_buffer[tx_r_addr];
 	if (tx_start) begin
 		tx_addr <= { tpsr, 8'd0 };
 	end else if (tx_strobe_pe) begin
@@ -412,6 +419,7 @@ always @(posedge clk) begin
 						5'h0a: rbcr[7:0] <= din;
 						5'h0b: rbcr[15:8] <= din;
 						5'h0c: rcr <= din;
+						5'h0d: tcr <= din;
 						5'h0f: imr <= din;
 						default: ;
 					endcase
@@ -434,8 +442,7 @@ always @(posedge clk) begin
 						// remote dma abort
 					end else if (din[3] || din[4]) begin
 						// remote dma read or write
-						if (rbcr_is_0)
-							isr[6] <= 1'b1; // RDC
+						isr[6] <= rbcr_is_0; // RDC
 					end
 				end
 			end else if (!rbcr_is_0) begin
