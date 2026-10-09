@@ -180,59 +180,6 @@ always @(posedge clk) begin
 	end
 end
 
-// EEPROM read (rtl8019)
-reg [7:0]  ee_cr;
-reg [3:0]  ee_bit_cnt;
-reg [15:0] ee_shifter;
-reg        ee_sclk_d;
-
-wire ee_reg_wr = wr_ne && (ps == 3) && (addr == 1);
-wire ee_reset  = ee_reg_wr ? !din[3] : !ee_cr[3];
-
-wire ee_sclk_pe =  ee_cr[2] & ~ee_sclk_d;
-wire ee_sclk_ne = ~ee_cr[2] &  ee_sclk_d;
-
-always @(posedge clk) begin
-	if (reset_pe) ee_sclk_d <= 1'b0;
-	else          ee_sclk_d <= ee_cr[2];
-end
-
-always @(posedge clk) begin
-	if (reset_pe) begin
-		ee_cr      <= 0;
-		ee_bit_cnt <= 0;
-		ee_shifter <= 0;
-	end else begin
-		if (ee_reg_wr)
-			ee_cr <= din;
-		if (ee_reset) begin
-			ee_bit_cnt <= 0;
-			ee_shifter <= 0;
-		end else begin
-			if (ee_sclk_pe) begin
-				if (ee_bit_cnt < 15)
-					ee_bit_cnt <= ee_bit_cnt + 4'd1;
-				if (ee_bit_cnt < 10)
-					ee_shifter <= { ee_shifter[14:0], ee_cr[1] };
-			end
-			if (ee_sclk_ne) begin
-				if (ee_bit_cnt == 10) begin
-					case (ee_shifter[2:0])
-						3'b010: ee_shifter <= { mac[1], mac[0] };
-						3'b011: ee_shifter <= { mac[3], mac[2] };
-						3'b100: ee_shifter <= { mac[5], mac[4] };
-						default: ee_shifter <= 0;
-					endcase
-				end else if (ee_bit_cnt > 10) begin
-					ee_shifter <= { ee_shifter[14:0], 1'b0 };
-				end
-			end
-		end
-	end
-end
-
-wire eeprom_do = (ee_bit_cnt >= 10) ? ee_shifter[15] : 1'b0;
-
 reg [7:0] rom_do;
 reg [7:0] reg_do;
 reg [7:0] rx_buffer_do;
@@ -289,7 +236,6 @@ always @(*) begin
 			// page 3 (rtl8019)
 			case (addr)
 				5'h00: reg_do = cr;
-				5'h01: reg_do = { ee_cr[7:1], eeprom_do }; // 9346cr
 				default: reg_do = 8'h00;
 			endcase
 		end
