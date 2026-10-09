@@ -201,65 +201,44 @@ end
 
 // register read
 always @(*) begin
-	case (ps)
-		2'b00: begin
-			// page 0
-			case (addr)
-				5'h00: reg_do = cr;
-				5'h03: reg_do = bnry;
-				5'h04: reg_do = 8'h01; // tsr: tx ok
-				5'h07: reg_do = isr;
-				5'h08: reg_do = rsar[7:0];
-				5'h09: reg_do = rsar[15:8];
-				5'h0a: reg_do = rbcr[7:0];
-				5'h0b: reg_do = rbcr[15:8];
-				5'h0c: reg_do = 8'h01; // rsr: rx ok
-				default: reg_do = 8'h00;
-			endcase
-		end
-		2'b01: begin
-			// page 1
-			case (addr)
-				5'h00: reg_do = cr;
-				5'h07: reg_do = curr;
-				default: reg_do = 8'h00;
-			endcase
-		end
-		2'b10: begin
-			// page 2
-			case (addr)
-				5'h00: reg_do = cr;
-				default: reg_do = 8'h00;
-			endcase
-		end
-		2'b11: begin
-			// page 3 (rtl8019)
-			case (addr)
-				5'h00: reg_do = cr;
-				default: reg_do = 8'h00;
-			endcase
-		end
-	endcase
+	reg_do = 8'h00;
+	// page 0
+	if (ps == 0) begin
+		case (addr)
+			5'h03: reg_do = bnry;
+			5'h04: reg_do = 8'h01; // tsr: tx ok
+			5'h07: reg_do = isr;
+			5'h08: reg_do = rsar[7:0];
+			5'h09: reg_do = rsar[15:8];
+			5'h0a: reg_do = rbcr[7:0];
+			5'h0b: reg_do = rbcr[15:8];
+			5'h0c: reg_do = 8'h01; // rsr: rx ok
+			default: ;
+		endcase
+	end
+	// page 1
+	if (ps == 1) begin
+		if (addr == 7) reg_do = curr;
+	end
+	// cr is available on all pages
+	if (addr == 0) begin
+		reg_do = cr;
+	end
 end
 
 wire is_loop = (lb != 2'b00);
 wire is_prom = (rsar[15:8] == 8'h00);
 
+wire [7:0] dma_do = (is_prom) ? rom_do :
+	(is_loop) ? tx_byte :
+	rx_buffer_do;
+
 // CPU read
 always @(*) begin
-	dout = 8'h00;
 	if (rd) begin
-		if (dma_port) begin
-			if (is_prom) begin
-				dout = rom_do;
-			end else if (is_loop) begin
-				dout = tx_byte;
-			end else begin
-				dout = rx_buffer_do;
-			end
-		end else begin
-			dout = reg_do;
-		end
+		dout = dma_port ? dma_do : reg_do;
+	end else begin
+		dout = 8'h00;
 	end
 end
 
@@ -321,7 +300,7 @@ always @(posedge clk) begin
 end
 
 reg  [11:0] tx_addr;
-wire [11:0] tx_r_addr = is_loop ? rsar[11:0] : tx_addr;
+wire [11:0] tx_r_addr = (is_loop) ? rsar[11:0] : tx_addr;
 
 // local DMA frame transmitter
 always @(posedge clk) begin
@@ -338,6 +317,15 @@ always @(posedge clk) begin
 	rx_buffer_do <= rx_buffer[rsar[11:0]];
 end
 
+// remote DMA data writer
+always @(posedge clk) begin
+	if (wr_ne) begin
+		if (dma_port && !rbcr_is_0) begin
+			tx_buffer[rsar[11:0]] <= din;
+		end
+	end
+end
+
 wire rbcr_is_0 = (rbcr == 16'd0);
 wire rbcr_is_1 = (rbcr == 16'd1);
 
@@ -347,11 +335,11 @@ always @(posedge clk) begin
 		cr   <= 8'h21;    // ABORT, STP
 		isr  <= 8'h80;    // RST
 		imr  <= 8'h00;
-		rbcr <= 16'h7050; // Realtek ID
+		rbcr <= 16'h7050; // RTL8019 Id
 	end else begin
 		if (wr_ne) begin
 			if (!dma_port) begin
-				// register page 0
+				// write register
 				if (ps == 0) begin
 					case (addr)
 						5'h01: pstart <= din;
@@ -372,11 +360,11 @@ always @(posedge clk) begin
 						default: ;
 					endcase
 				end
-				// register page 1
-				else if (ps == 1) begin
+				// page 1
+				if (ps == 1) begin
 					if (addr == 7) curr <= din;
 				end
-				// CR is available on all pages
+				// cr is available on all pages
 				if (addr == 0) begin
 					cr <= din;
 					if (din[0]) begin
@@ -387,23 +375,17 @@ always @(posedge clk) begin
  						isr[7] <= 1'b0; // RST
  					end
 					if (din[5]) begin
-						// remote dma abort
+						// abort
 					end else if (din[3] || din[4]) begin
-						// remote dma read or write
+						// read or write
 						isr[6] <= rbcr_is_0; // RDC
 					end
 				end
-			end else if (!rbcr_is_0) begin
-				// remote dma write (tx)
-				rsar <= rsar + 16'd1;
-				rbcr <= rbcr - 16'd1;
-				if (rbcr_is_1)
-					isr[6] <= 1'b1; // RDC
-				tx_buffer[rsar[11:0]] <= din;
 			end
-		end else if (rd_ne) begin
+		end
+		// remote dma operation
+		if (rd_ne || wr_ne) begin
 			if (dma_port && !rbcr_is_0) begin
-				// remote dma read (rx)
 				rsar <= rsar + 16'd1;
 				rbcr <= rbcr - 16'd1;
 				if (rbcr_is_1)
