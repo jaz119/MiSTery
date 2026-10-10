@@ -245,6 +245,7 @@ assign      cpu_din =
               {8'hff, (mfpcs_n & mfpiack_n) ? 8'hff : mfp_data_out} &
               {(!rom3_n & cubase_enable) ? cubase_dout : 8'hff, 8'hff} &
               {eth_rd ? eth_data_out : 8'hff, 8'hff} &
+              {eth_wr ?  mbus_a[8:1] : 8'hff, 8'hff} & // 74LS245 loopback
               (rom_n ? 16'hffff : rom_data_out) &
               {(n6850 & rw) ? (mbus_a[2] ? midi_acia_data_out : kbd_acia_data_out) : 8'hff, 8'hff} &
               {snd_data_oe_l ? 8'hff : snd_data_out, 8'hff} &
@@ -1078,8 +1079,9 @@ fdc1772 fdc1772 (
 /* --------------------- Ethernet on Cartridge Port (ETHERNEC) ------------------ */
 /* ------------------------------------------------------------------------------ */
 
-wire        eth_rd = ~rom4_n & ethernec_present;
-wire        eth_wr = ~rom3_n & ethernec_present;
+wire        usb_cs = mbus_a[15]; // NetUSBee ISP1160 chip select
+wire        eth_rd = ~rom4_n & ~usb_cs & ethernec_present;
+wire        eth_wr = ~rom3_n & ~usb_cs & ethernec_present;
 wire  [7:0] eth_data_out;
 
 ethernec ethernec (
