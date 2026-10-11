@@ -70,6 +70,7 @@ reg [15:0] rsar;           // remote start address register
 reg [15:0] rbcr;           // remote byte count register
 reg [3:0]  tpsr;           // transmit page start address
 reg [10:0] tbcr;           // transmitter byte count register
+reg [7:0]  tsr;            // transmitter status register
 
 wire stop = cr[0];         // stop mode
 wire txp  = cr[2];         // transmit packet toggle
@@ -206,7 +207,7 @@ always @(*) begin
 	if (ps == 0) begin
 		case (addr)
 			5'h03: reg_do = bnry;
-			5'h04: reg_do = 8'h01; // tsr: tx ok
+			5'h04: reg_do = tsr;
 			5'h07: reg_do = isr;
 			5'h08: reg_do = rsar[7:0];
 			5'h09: reg_do = rsar[15:8];
@@ -335,6 +336,7 @@ always @(posedge clk) begin
 		cr   <= 8'h21;    // ABORT, STP
 		isr  <= 8'h80;    // RST
 		imr  <= 8'h00;
+		tsr  <= 8'h00;
 		rbcr <= 16'h7050; // RTL8019 Id
 	end else begin
 		if (wr_ne) begin
@@ -370,9 +372,12 @@ always @(posedge clk) begin
 					if (din[0]) begin
 						// stop
 						isr[7] <= 1'b1; // RST
+						cr[2] <= 1'b0;  // TXP
 					end else if (din[1]) begin
  						// start
- 						isr[7] <= 1'b0; // RST
+						isr[7] <= 1'b0; // RST
+						if (din[2])     // TXP
+							tsr <= 8'h00;
  					end
 					if (din[5]) begin
 						// abort
@@ -392,6 +397,12 @@ always @(posedge clk) begin
 					isr[6] <= 1'b1; // RDC
 			end
 		end
+		// sending of a frame with wrong length
+		if (txp && (tbcr == 0 || tbcr > 1514)) begin
+			isr[3] <= 1'b1; // TXE
+			tsr[5] <= 1'b1; // FU
+			cr[2] <= 1'b0;  // TXP
+		end
 		// incoming frame received
 		if (rx_done) begin
 			isr[0] <= 1'b1; // PRX
@@ -400,6 +411,7 @@ always @(posedge clk) begin
 		// outgoing frame transmitted
 		if (tx_done) begin
 			isr[1] <= 1'b1; // PTX
+			tsr[0] <= 1'b1; // PTX
 			cr[2] <= 1'b0;  // TXP
 		end
 	end
