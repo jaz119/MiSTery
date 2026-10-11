@@ -59,7 +59,9 @@ reg [7:0]  cr;             // command register
 reg [7:0]  isr;            // interrupt service register
 reg [7:0]  imr;            // interrupt mask register
 reg [7:0]  rcr;            // receiver control register
+reg [7:0]  rsr;            // receiver status register
 reg [7:0]  tcr;            // transmitter control register
+reg [7:0]  tsr;            // transmitter status register
 reg [7:0]  dcr;            // data configuration register
 reg [7:0]  curr;           // current page register
 reg [7:0]  bnry;           // boundary page
@@ -70,7 +72,6 @@ reg [15:0] rsar;           // remote start address register
 reg [15:0] rbcr;           // remote byte count register
 reg [3:0]  tpsr;           // transmit page start address
 reg [10:0] tbcr;           // transmitter byte count register
-reg [7:0]  tsr;            // transmitter status register
 
 wire stop = cr[0];         // stop mode
 wire txp  = cr[2];         // transmit packet toggle
@@ -213,7 +214,7 @@ always @(*) begin
 			5'h09: reg_do = rsar[15:8];
 			5'h0a: reg_do = rbcr[7:0];
 			5'h0b: reg_do = rbcr[15:8];
-			5'h0c: reg_do = 8'h01; // rsr: rx ok
+			5'h0c: reg_do = rsr;
 			default: ;
 		endcase
 	end
@@ -258,32 +259,37 @@ reg [10:0] rx_length;
 always @(posedge clk) begin
 	rx_fin_d <= rx_fin;
 	if (reset_pe) begin
+		rsr <= 8'h00;
 		rx_fin <= 1'b0;
 		rx_fin_d <= 1'b0;
 	end else begin
 		if (rx_start) begin
+			rsr <= 8'h00;
 			// +4 for crc
 			rx_length <= 11'd4;
 			// +4 for header
 			rx_addr <= { curr[3:0], 8'd4 };
 			// first page already used
 			clda <= next_curr;
-		end else if (rx_strobe) begin
+		end else if (rx_strobe && !rsr[2]) begin
 			rx_buffer[rx_addr] <= rx_byte;
 			rx_length <= rx_length + 11'd1;
 			rx_addr <= rx_addr + 12'd1;
 			// count full pages
-			if (rx_addr[7:0] == 8'hFF) begin
+			if (rx_addr[7:0] == 8'hFF)
 				clda <= next_clda;
-			end
+			// check for overflow
+			if (rx_length == 1518)
+				rsr[2] <= 1'b1; // FAE
 		end else if (rx_stop) begin
 			// prepare to write header
 			rx_addr <= { curr[3:0], 8'd0 };
+			rsr[0] <= ~rsr[2]; // PRX
 			rx_fin <= 1'b1;
 		end else if (rx_fin) begin
 			// writing frame header
 			case (rx_addr[1:0])
-				2'd0: rx_buffer[rx_addr] <= 8'h01;
+				2'd0: rx_buffer[rx_addr] <= rsr;
 				2'd1: rx_buffer[rx_addr] <= clda;
 				2'd2: rx_buffer[rx_addr] <= rx_length[7:0];
 				2'd3: begin
@@ -372,13 +378,13 @@ always @(posedge clk) begin
 					if (din[0]) begin
 						// stop
 						isr[7] <= 1'b1; // RST
-						cr[2] <= 1'b0;  // TXP
 					end else if (din[1]) begin
  						// start
 						isr[7] <= 1'b0; // RST
-						if (din[2])     // TXP
-							tsr <= 8'h00;
  					end
+					if (din[2]) begin   // TXP
+						tsr <= 8'h00;
+					end
 					if (din[5]) begin
 						// abort
 					end else if (din[3] || din[4]) begin
