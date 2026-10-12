@@ -106,7 +106,7 @@ wire wr_ne = ~wr & wr_d;
 reg rx_begin_d;
 reg mac_begin_d;
 
-// these are in the same clock domain
+// same clock domain
 always @(posedge clk) begin
 	if (reset_pe) begin
 		rx_begin_d  <= 1'b0;
@@ -124,7 +124,7 @@ wire mac_start = mac_begin & ~mac_begin_d;
 reg [1:0] tx_begin_sr;
 reg [1:0] tx_strobe_sr;
 
-// they are in the SPI bus clock domain
+// belongs to SPI clock domain
 always @(posedge clk) begin
 	if (reset_pe) begin
 		tx_begin_sr  <= 2'd0;
@@ -157,7 +157,7 @@ end
 
 // syncing i/o controller rx frame traffic
 wire [3:0] used = (curr - bnry);
-wire full = (used >= 4'd10);
+wire full = (used >= 10);
 
 reg tx_ready;
 reg rx_ready;
@@ -204,8 +204,12 @@ end
 // register read
 always @(*) begin
 	reg_do = 8'h00;
+	// cr is available on all pages
+	if (addr == 0) begin
+		reg_do = cr;
+	end
 	// page 0
-	if (ps == 0) begin
+	else if (ps == 0) begin
 		case (addr)
 			5'h03: reg_do = bnry;
 			5'h04: reg_do = tsr;
@@ -219,12 +223,8 @@ always @(*) begin
 		endcase
 	end
 	// page 1
-	if (ps == 1) begin
+	else if (ps == 1) begin
 		if (addr == 7) reg_do = curr;
-	end
-	// cr is available on all pages
-	if (addr == 0) begin
-		reg_do = cr;
 	end
 end
 
@@ -257,12 +257,12 @@ reg [10:0] rx_length;
 
 // local DMA frame receiver
 always @(posedge clk) begin
-	rx_fin_d <= rx_fin;
 	if (reset_pe) begin
 		rsr <= 8'h00;
 		rx_fin <= 1'b0;
 		rx_fin_d <= 1'b0;
 	end else begin
+		rx_fin_d <= rx_fin;
 		if (rx_start) begin
 			rsr <= 8'h00;
 			// +4 for crc
@@ -274,15 +274,16 @@ always @(posedge clk) begin
 		end else if (rx_strobe && !rsr[2]) begin
 			rx_buffer[rx_addr] <= rx_byte;
 			rx_length <= rx_length + 11'd1;
+			// write past pstop boundary
 			rx_addr <= rx_addr + 12'd1;
-			// count full pages
+			// full page count
 			if (rx_addr[7:0] == 8'hFF)
 				clda <= next_clda;
-			// check for overflow
+			// check max frame limit
 			if (rx_length == 1518)
 				rsr[2] <= 1'b1; // FAE
 		end else if (rx_stop) begin
-			// prepare to write header
+			// prepare header write
 			rx_addr <= { curr[3:0], 8'd0 };
 			rsr[0] <= ~rsr[2]; // PRX
 			rx_fin <= 1'b1;
@@ -296,7 +297,7 @@ always @(posedge clk) begin
 					rx_buffer[rx_addr] <= { 5'h00, rx_length[10:8] };
 					rx_fin <= 1'b0;
 					if (rx_length < 64) begin
-						// dis/allow runt frames
+						// allow/drop runt frames
 						rx_fin_d <= rcr[1];
 					end
 				end
@@ -308,14 +309,25 @@ end
 
 reg  [11:0] tx_addr;
 wire [11:0] tx_r_addr = (is_loop) ? rsar[11:0] : tx_addr;
+wire wrong_tx = (tbcr == 0 || tbcr > 1514) && txp;
 
 // local DMA frame transmitter
 always @(posedge clk) begin
 	tx_byte <= tx_buffer[tx_r_addr];
-	if (tx_start) begin
-		tx_addr <= { tpsr, 8'd0 };
-	end else if (tx_strobe_pe) begin
-		tx_addr <= tx_addr + 12'd1;
+	if (reset_pe) begin
+		tsr <= 8'h00;
+	end else begin
+		if (wrong_tx) begin
+			// avoid sending invalid frames
+			tsr[5] <= 1'b1; // FU
+		end else if (tx_start) begin
+			tsr <= 8'h00;
+			tx_addr <= { tpsr, 8'd0 };
+		end else if (tx_strobe_pe) begin
+			tx_addr <= tx_addr + 12'd1;
+		end else if (tx_done) begin
+			tsr[0] <= 1'b1; // PTX
+		end
 	end
 end
 
@@ -342,13 +354,30 @@ always @(posedge clk) begin
 		cr   <= 8'h21;    // ABORT, STP
 		isr  <= 8'h80;    // RST
 		imr  <= 8'h00;
-		tsr  <= 8'h00;
 		rbcr <= 16'h7050; // RTL8019 Id
 	end else begin
 		if (wr_ne) begin
 			if (!dma_port) begin
-				// write register
-				if (ps == 0) begin
+				// cr is available on all pages
+				if (addr == 0) begin
+					cr <= din;
+					if (din[0]) begin
+						// stop
+						isr[7] <= 1'b1; // RST
+					end else if (din[1]) begin
+ 						// start
+						isr[7] <= 1'b0; // RST
+ 					end
+					if (din[5]) begin
+						// abort
+					end else if (din[3] || din[4]) begin
+						// read or write
+						if (rbcr_is_0)
+							isr[6] <= 1'b1; // RDC
+					end
+				end
+				// page 0
+				else if (ps == 0) begin
 					case (addr)
 						5'h01: pstart <= din;
 						5'h02: pstop <= din;
@@ -369,28 +398,8 @@ always @(posedge clk) begin
 					endcase
 				end
 				// page 1
-				if (ps == 1) begin
+				else if (ps == 1) begin
 					if (addr == 7) curr <= din;
-				end
-				// cr is available on all pages
-				if (addr == 0) begin
-					cr <= din;
-					if (din[0]) begin
-						// stop
-						isr[7] <= 1'b1; // RST
-					end else if (din[1]) begin
- 						// start
-						isr[7] <= 1'b0; // RST
- 					end
-					if (din[2]) begin   // TXP
-						tsr <= 8'h00;
-					end
-					if (din[5]) begin
-						// abort
-					end else if (din[3] || din[4]) begin
-						// read or write
-						isr[6] <= rbcr_is_0; // RDC
-					end
 				end
 			end
 		end
@@ -403,12 +412,6 @@ always @(posedge clk) begin
 					isr[6] <= 1'b1; // RDC
 			end
 		end
-		// sending of a frame with wrong length
-		if (txp && (tbcr == 0 || tbcr > 1514)) begin
-			isr[3] <= 1'b1; // TXE
-			tsr[5] <= 1'b1; // FU
-			cr[2] <= 1'b0;  // TXP
-		end
 		// incoming frame received
 		if (rx_done) begin
 			isr[0] <= 1'b1; // PRX
@@ -417,7 +420,11 @@ always @(posedge clk) begin
 		// outgoing frame transmitted
 		if (tx_done) begin
 			isr[1] <= 1'b1; // PTX
-			tsr[0] <= 1'b1; // PTX
+			cr[2] <= 1'b0;  // TXP
+		end
+		// transmitting wrong-length frame
+		if (wrong_tx) begin
+			isr[3] <= 1'b1; // TXE
 			cr[2] <= 1'b0;  // TXP
 		end
 	end

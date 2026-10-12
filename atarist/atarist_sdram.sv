@@ -1079,16 +1079,17 @@ fdc1772 fdc1772 (
 /* --------------------- Ethernet on Cartridge Port (ETHERNEC) ------------------ */
 /* ------------------------------------------------------------------------------ */
 
-wire        usb_cs = mbus_a[15]; // NetUSBee ISP1160 chip select
-wire        eth_rd = ~rom4_n & ~usb_cs & ethernec_present;
-wire        eth_wr = ~rom3_n & ~usb_cs & ethernec_present;
+wire        eth_rd = ~rom4_n & ethernec_present;
+wire        eth_wr = ~rom3_n & ethernec_present;
+wire        usb_cs = (mbus_a[15] == 1'b1); // netusbee usb select
+
 wire  [7:0] eth_data_out;
 
 ethernec ethernec (
 	.clk        (clk_32      ),
 	.rst        (peripheral_reset),
-	.rd         (eth_rd      ),
-	.wr         (eth_wr      ),
+	.rd         (eth_rd & ~usb_cs),
+	.wr         (eth_wr & ~usb_cs),
 	.addr       (mbus_a[13:9]),
 	.din        (mbus_a[8:1] ),
 	.dout       (eth_data_out),
