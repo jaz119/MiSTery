@@ -245,7 +245,7 @@ assign      cpu_din =
               {8'hff, (mfpcs_n & mfpiack_n) ? 8'hff : mfp_data_out} &
               {(!rom3_n & cubase_enable) ? cubase_dout : 8'hff, 8'hff} &
               {eth_rd ? eth_data_out : 8'hff, 8'hff} &
-              {eth_wr ?  mbus_a[8:1] : 8'hff, 8'hff} & // 74LS245 loopback
+              (eth_wr ? {mbus_a[8:1], ls574} : 16'hffff) & // 74LS245 and 74LS574 loopback
               (rom_n ? 16'hffff : rom_data_out) &
               {(n6850 & rw) ? (mbus_a[2] ? midi_acia_data_out : kbd_acia_data_out) : 8'hff, 8'hff} &
               {snd_data_oe_l ? 8'hff : snd_data_out, 8'hff} &
@@ -1083,7 +1083,23 @@ wire        eth_rd = ~rom4_n & ethernec_present;
 wire        eth_wr = ~rom3_n & ethernec_present;
 wire        usb_cs = (mbus_a[15] == 1'b1); // netusbee usb select
 
+logic       rom4_nd;
+logic [7:0] ls574; // d[7:0] for usb chip
 wire  [7:0] eth_data_out;
+
+always_ff @(posedge clk_32) begin
+	if (peripheral_reset) rom4_nd <= 1'b1;
+	else                  rom4_nd <= rom4_n;
+end
+
+wire ls574_we = ethernec_present & (rom4_n & ~rom4_nd);
+
+// for netusbee hw compatibility and netus.tos test compliance
+always_ff @(posedge clk_32) begin
+	if (ls574_we) begin
+		ls574 <= mbus_a[8:1];
+	end
+end
 
 ethernec ethernec (
 	.clk        (clk_32      ),

@@ -352,6 +352,9 @@ wire rbcr_is_1 = (rbcr == 16'd1);
 always @(posedge clk) begin
 	if (reset_pe || reset) begin
 		cr   <= 8'h21;    // ABORT, STP
+		rcr  <= 8'h20;    // MON
+		tcr  <= 8'h02;    // LB1
+		dcr  <= 8'h00;
 		isr  <= 8'h80;    // RST
 		imr  <= 8'h00;
 		rbcr <= 16'h7050; // RTL8019 Id
@@ -361,20 +364,14 @@ always @(posedge clk) begin
 				// cr is available on all pages
 				if (addr == 0) begin
 					cr <= din;
-					if (din[0]) begin
-						// stop
-						isr[7] <= 1'b1; // RST
-					end else if (din[1]) begin
- 						// start
+					if (!din[0]) begin
+ 						// not stop
 						isr[7] <= 1'b0; // RST
- 					end
-					if (din[5]) begin
-						// abort
-					end else if (din[3] || din[4]) begin
-						// read or write
-						if (rbcr_is_0)
+						// dummy read or write
+						if (rbcr_is_0 && (din[3] || din[4])) begin
 							isr[6] <= 1'b1; // RDC
-					end
+						end
+ 					end
 				end
 				// page 0
 				else if (ps == 0) begin
