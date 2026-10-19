@@ -47,12 +47,10 @@ module ethernec (
 	input            mac_begin,  // rising edge before new mac is sent
 	input            mac_strobe, // rising edge before each mac byte
 	input      [7:0] mac_byte,   // mac address byte
-
-	output           irq         // interrupt request
 );
 
 // tx_ready[17], rx_ready[16], tx_count[15:0]
-assign status = { 8'h00, 6'h00, tx_ready, rx_ready, 5'h00, tbcr };
+assign status = { 8'ha8, 6'h00, tx_ready, rx_ready, 5'h00, tbcr };
 
 // NE2000 internal registers
 reg [7:0]  cr;             // command register
@@ -91,13 +89,8 @@ reg [7:0] tx_buffer[4095:0]; // 2 ethernet frames (ping-pong)
 reg rd_d, wr_d;
 
 always @(posedge clk) begin
-	if (reset_pe) begin
-		rd_d <= 1'b0;
-		wr_d <= 1'b0;
-	end else begin
-		rd_d <= rd;
-		wr_d <= wr;
-	end
+	rd_d <= rd;
+	wr_d <= wr;
 end
 
 wire rd_ne = ~rd & rd_d;
@@ -108,13 +101,8 @@ reg mac_begin_d;
 
 // same clock domain
 always @(posedge clk) begin
-	if (reset_pe) begin
-		rx_begin_d  <= 1'b0;
-		mac_begin_d <= 1'b0;
-	end else begin
-		rx_begin_d  <= rx_begin;
-		mac_begin_d <= mac_begin;
-	end
+	rx_begin_d <= rx_begin;
+	mac_begin_d <= mac_begin;
 end
 
 wire rx_start = rx_begin & ~rx_begin_d;
@@ -319,7 +307,7 @@ always @(posedge clk) begin
 	end else begin
 		if (wrong_tx) begin
 			// avoid sending invalid frames
-			tsr[5] <= 1'b1; // FU
+			tsr <= 8'h20; // FU
 		end else if (tx_start) begin
 			tsr <= 8'h00;
 			tx_addr <= { tpsr, 8'd0 };
@@ -363,10 +351,15 @@ always @(posedge clk) begin
 			if (!dma_port) begin
 				// cr is available on all pages
 				if (addr == 0) begin
-					cr <= din;
+					{ cr[7:3], cr[1:0] } <= { din[7:3], din[1:0] };
 					if (!din[0]) begin
- 						// not stop
-						isr[7] <= 1'b0; // RST
+						// not stop
+						if (cr[0]) begin
+							isr[7] <= 1'b0; // RST
+						end
+						if (din[2]) begin
+							cr[2] <= 1'b1;  // TXP
+						end
 						// dummy read or write
 						if (rbcr_is_0 && (din[3] || din[4])) begin
 							isr[6] <= 1'b1; // RDC
@@ -426,7 +419,5 @@ always @(posedge clk) begin
 		end
 	end
 end
-
-assign irq = (|(isr & imr) & ~reset);
 
 endmodule
